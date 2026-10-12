@@ -540,7 +540,7 @@ void drawUsagePage(Arduino_Canvas* c, uint32_t t, uint16_t accent) {
   c->fillScreen(BG);
   c->fillCircle(28, 36, 6, US_PURPLE);
   afPrintTrack(c, UF_TEXT, 43, 44, "CODEX", WHITE, 2);
-  afPrint(c, UF_SMALL, 458 - afWidth(UF_SMALL, usageDate), 41, usageDate, US_MUTED);
+  afPrint(c, UF_SMALL, 334 - afWidth(UF_SMALL, usageDate), 41, usageDate, US_MUTED);
   c->fillRect(22, 63, 436, 1, C565(0x20, 0x23, 0x28));
   char text[64];
   if (usageN && !strcmp(usageWindows[0].label, "7d")) strlcpy(text, "WEEKLY USED", sizeof(text));
@@ -693,7 +693,7 @@ void drawTodoPage(Arduino_Canvas* c, uint32_t t) {
     }
   } else {
     afPrint(c, TF_TITLE, 26, 48, "今日待办", WHITE);
-    afPrint(c, UF_SMALL, 454 - afWidth(UF_SMALL, todoDate), 43, todoDate, US_MUTED);
+    afPrint(c, UF_SMALL, 334 - afWidth(UF_SMALL, todoDate), 43, todoDate, US_MUTED);
     int left = 0; for (int i = 0; i < todoN; i++) if (!todoItems[i].done) left++;
     char text[24]; snprintf(text, sizeof(text), "%02d", left);
     afPrint(c, UF_STAT, 26, 101, text, WHITE);
@@ -1234,21 +1234,32 @@ void drawPagePin(Arduino_Canvas* c, bool lit, uint16_t seatColor) {
   c->fillRoundRect(cx - 2, cy + 2, 4, 12, 2, col);
 }
 
-// Low-battery icon for the side pages (2026-10-04): the face's top-right icon,
-// same size and colors, in the bottom-left corner instead — level with the pin
-// (cy 440) on the other side, and clear of the almanac's date and the play
-// card's rounded corner, which sit where the face has it. <20 % only, blinks
-// below 10 %; pct -1 (no battery / unknown) draws nothing.
-static const uint16_t BATT_RIM = C565(0x4A, 0x52, 0x5C);
+// Shared status on every common page; unknown battery level never becomes zero.
 static const uint16_t BATT_RED = C565(0xFF, 0x5A, 0x4A);
-void drawPageBatt(Arduino_Canvas* c, int pct, uint32_t t) {
-  if (pct < 0 || pct >= 20) return;
-  if (pct < 10 && (t / 500) % 2) return;
-  const int x = 19, y = 434;
-  c->drawRoundRect(x, y, 26, 13, 3, BATT_RIM);
-  c->fillRect(x + 26, y + 4, 3, 6, BATT_RIM);
-  int fw = 20 * pct / 20;
-  c->fillRoundRect(x + 3, y + 3, max(2, fw), 7, 2, BATT_RED);
+void drawPageBatt(Arduino_Canvas* c, int pct, uint32_t t, bool charging, bool usb, int y) {
+  const int x = 358;
+  uint16_t color = charging ? US_PURPLE : pct >= 0 && pct < 20 ? BATT_RED : US_MUTED;
+  c->fillRoundRect(350, y - 6, 116, 36, 10, BG);
+  if (pct < 0 && usb) {
+    c->drawLine(x + 8, y + 2, x + 8, y + 9, color);
+    c->drawLine(x + 18, y + 2, x + 18, y + 9, color);
+    c->drawRoundRect(x + 4, y + 8, 19, 10, 3, color);
+    c->drawLine(x + 13, y + 18, x + 13, y + 24, color);
+  } else {
+    c->drawRoundRect(x, y + 5, 26, 13, 3, color);
+    c->fillRect(x + 26, y + 9, 3, 6, color);
+    if (pct > 0 && (pct >= 10 || charging || (t / 500) % 2 == 0))
+      c->fillRoundRect(x + 3, y + 8, max(1, 20 * min(pct, 100) / 100), 7, 2, color);
+  }
+  if (charging) {
+    c->drawLine(403, y + 3, 397, y + 12, color);
+    c->drawLine(397, y + 12, 404, y + 12, color);
+    c->drawLine(404, y + 12, 398, y + 21, color);
+  }
+  char text[8];
+  if (pct >= 0) snprintf(text, sizeof(text), "%d%%", min(pct, 100));
+  else strlcpy(text, usb ? "USB" : "--", sizeof(text));
+  afPrint(c, UF_SMALL, 458 - afWidth(UF_SMALL, text), y + 17, text, color);
 }
 
 // Plain pill, centred on cy: each page hands in its own empty band (face and

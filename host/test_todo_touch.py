@@ -47,10 +47,14 @@ static JsonDocument sent;
 static void sendJson(JsonDocument& d) { sent.set(d); }
 static void noteActivity() {}
 '''
-        if 'static void todoPageXY(' in main:
-            source += function(main, 'static void todoPageXY(')
+        if 'static void canvasPageXY(' in main:
+            source += function(main, 'static void canvasPageXY(')
         source += function(canvas, 'void Arduino_Canvas::writePixelPreclipped')
         source += function(main, 'static void pageXY(')
+        source += main[main.index('enum ClockView'):main.index('// Which source the play page')]
+        clock_branch = function(main, '} else if (shownPage == PAGE_CLOCK) {')
+        source += '\nstatic const int SWIPE_MIN_PX=40, SND_SELECT=0, SND_TICK=1;\nstatic void audioPlay(int){}\n'
+        source += 'static void dispatchClock(){' + clock_branch[clock_branch.index('{')+1:-1] + '}\n'
         source += pages[pages.index('struct TodoItem'):pages.index('static void todoSort()')]
         source += function(pages, 'static TodoItem* todoChosen()')
         source += function(pages, 'static uint32_t focusRemaining(')
@@ -77,8 +81,13 @@ static bool expect(bool yes,const char* name) {
  return yes;
 }
 int main() {
- bool ok=true;
+ bool ok=expect(clockView==CV_USAGE,"quota is the initial page");
  for(shownRot=0;shownRot<4;shownRot++) {
+ clockView=CV_USAGE;
+ nativePoint(160,240,tpLastX,tpLastY);nativePoint(300,240,tpStartX,tpStartY);dispatchClock();
+ ok &= expect(clockView==CV_CLOCK,"left swipe opens clock second");
+ nativePoint(300,240,tpLastX,tpLastY);nativePoint(160,240,tpStartX,tpStartY);dispatchClock();
+ ok &= expect(clockView==CV_USAGE,"right swipe returns to quota");
  todoPending[0]=0;todoN=4;todoRev=7;strcpy(todoCurrent,"task");
  for(int i=0;i<4;i++){todoOrder[i]=i;strcpy(todoItems[i].id,i?"other":"task");todoItems[i].done=false;}
  todoView=1;gesture(126,389,126,389);

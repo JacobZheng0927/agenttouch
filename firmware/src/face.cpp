@@ -562,21 +562,6 @@ static void drawToast(Arduino_Canvas* c, const FaceFrame& f, uint32_t t,
   }
 }
 
-// Battery appears only when low; blinks below 10%. While the 多会话 row is up
-// its › (tip x 452, y 39..54 with the stroke) owns the corner, so the icon
-// steps down 36 px under it; the row's backing never reaches
-// past x 424 (titles are capped at 300 px), so x stays.
-static void drawLowBatt(Arduino_Canvas* c, const FaceFrame& f, uint32_t t,
-                        bool rowUp) {
-  if (f.battPct < 0 || f.battPct >= 20) return;
-  if (f.battPct < 10 && (t / 500) % 2) return;
-  int y = rowUp ? 64 : 28;
-  c->drawRoundRect(432, y, 26, 13, 3, GREYDIM);
-  c->fillRect(458, y + 4, 3, 6, GREYDIM);
-  int fw = 20 * f.battPct / 20;
-  c->fillRoundRect(435, y + 3, max(2, fw), 7, 2, BATTRED);
-}
-
 static void drawZz(Arduino_Canvas* c, uint32_t t) {
   float p = (t % 3600) / 3600.0f;
   int rise = (int)(p * 32);
@@ -968,7 +953,6 @@ void faceRender(Arduino_Canvas* c, const FaceFrame& f, uint32_t t) {
   // Claude 多会话 top row: drawn after the eyes (below), decided here
   // so the low-battery icon can step out of its way
   bool rowUp = f.sessN >= 2 && toastK > 0.03f;
-  drawLowBatt(c, f, t, rowUp);
   drawSkinProps(c, t);
 
   // blink on the per-state cadence table (grokface.cpp)

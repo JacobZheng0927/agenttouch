@@ -33,8 +33,8 @@ from navigation. Podcast HTTP operations, player startup/resume, automatic
 podcast/almanac card pushes and fortune voice prefetch are disabled. The Mac
 now-playing page and pet audio remain available.
 
-From the clock, swipe right for **Codex usage**, left to return. Swipe left from
-the clock for Mac now-playing. The orientation with the three buttons on the right now shows the
+With the buttons on the left, the default page is **Codex usage**. Swipe left
+for the clock, then left again for Mac now-playing; swipe right to go back. The orientation with the three buttons on the right now shows the
 task list. On the Mac, open `http://127.0.0.1:8788/settings#usage` for exact counts.
 No card is needed for usage; account access requires internet on the Mac.
 
@@ -118,3 +118,9 @@ updates. `host/test_todo.py` covers concurrent fragmented BLE writes;
 `host/test_todo_touch.py` exercises the actual task hit handler against the
 Arduino_Canvas pixel rotation in all four orientations (requires clang++ and
 PlatformIO's downloaded dependencies).
+
+All common pages show a battery badge at the top right: percentage when a
+battery is detected, a lightning mark while charging, USB when externally
+powered without a detected battery, and -- when the level is unknown. The PMU
+reading is cached from the existing two-second power poll. Dates move left to
+leave the status badge clear.

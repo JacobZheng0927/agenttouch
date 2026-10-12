@@ -131,6 +131,8 @@ static uint32_t lastTapAt = 0;
 static uint32_t setCardUntil = 0;
 static const uint8_t BRIGHT_LVLS[3] = BRIGHT_LEVELS;
 static uint8_t brightLvl = 1;
+static int batteryPct = -1;
+static bool usbPowered = false;
 static uint8_t powState = 0;   // 0 = on battery, 1 = charging, 2 = USB + full
 // "拿起时显示" binding (doc/06 screen-sovereignty rules): what the pet shows
 // while confirmed in-hand. Host pushes {"t":"cfg","pickup":"face"} from
@@ -221,16 +223,16 @@ static bool wearSkinFor(int seat, uint8_t want) {
   return true;
 }
 static bool wearSkin(uint8_t want) { return wearSkinFor(selected, want); }
-// Codex usage <- swipe right <- clock -> swipe left -> Mac now playing.
+// Home: Codex usage -> swipe left -> clock -> swipe left -> Mac now playing.
 enum ClockView : uint8_t { CV_USAGE = 0, CV_CLOCK, CV_NP };
-static uint8_t clockView = CV_CLOCK;
+static uint8_t clockView = CV_USAGE;
 // Which source the play page is showing, and the double-tap override that
 // beats the automatic answer until that answer itself changes.
 // Debug view lock (host {"t":"view"}), so /test/shot can photograph a page
 // the board is not physically turned to. Zero = off.
 static uint8_t  viewPg = PAGE_FACE, viewSub = 0;
 static uint32_t viewUntil = 0;
-static uint8_t  viewSavedCv = CV_CLOCK;   // flip-side views to put back afterwards
+static uint8_t  viewSavedCv = CV_USAGE;   // flip-side views to put back afterwards
 
 // Voice remote: after hold-to-talk ends a "↵ 发送" bubble arms for 6 s —
 // tap = host presses Return. (Shake-to-undo existed briefly and was retired
@@ -663,7 +665,7 @@ static void pageXY(int x, int y, int& px, int& py) {
 
 // Task hit targets use the inverse of Arduino_Canvas::writePixelPreclipped.
 // The legacy pageXY odd rotations mirror x, which swaps the task buttons.
-static void todoPageXY(int x, int y, int& px, int& py) {
+static void canvasPageXY(int x, int y, int& px, int& py) {
   switch ((4 - shownRot) & 3) {
     case 1:  px = y;       py = 479 - x; break;
     case 2:  px = 479 - x; py = 479 - y; break;
@@ -2883,8 +2885,8 @@ static void touchPoll() {
       }
     } else if (shownPage == PAGE_CALENDAR) {
       int px, py, sx, sy;
-      todoPageXY(tpLastX, tpLastY, px, py);
-      todoPageXY(tpStartX, tpStartY, sx, sy);
+      canvasPageXY(tpLastX, tpLastY, px, py);
+      canvasPageXY(tpStartX, tpStartY, sx, sy);
       JsonDocument command;
       if (todoTouch(command, px, py, px - sx, py - sy)) sendJson(command);
       noteActivity();
@@ -2919,10 +2921,14 @@ static void touchPoll() {
       }
     } else if (shownPage == PAGE_CLOCK) {
       // Usage -> clock -> Mac now playing; no wrap-around.
-      if (vdx > SWIPE_MIN_PX) {
+      int px, py, sx, sy;
+      canvasPageXY(tpLastX, tpLastY, px, py);
+      canvasPageXY(tpStartX, tpStartY, sx, sy);
+      int stripDx = px - sx;
+      if (stripDx > SWIPE_MIN_PX) {
         if (clockView == CV_CLOCK)   { clockView = CV_USAGE; audioPlay(SND_SELECT); }
         else if (clockView == CV_NP) { clockView = CV_CLOCK; audioPlay(SND_TICK); }
-      } else if (vdx < -SWIPE_MIN_PX) {
+      } else if (stripDx < -SWIPE_MIN_PX) {
         if (clockView == CV_USAGE)     { clockView = CV_CLOCK; audioPlay(SND_TICK); }
         else if (clockView == CV_CLOCK) { clockView = CV_NP; audioPlay(SND_SELECT); }
       }
@@ -3335,6 +3341,7 @@ void loop() {
       powState = chg ? 1 : (vbus ? 2 : 0);
 
       int pct = pmu.isBatteryConnect() ? pmu.getBatteryPercent() : -1;
+      batteryPct = pct; usbPowered = vbus;
       if (!vbus && pct >= 0 && pct <= 5) {
         if (!lowSince) lowSince = now;     // 60 s of confirmed low, so one
       } else lowSince = 0;                 // noisy PMU reading can't kill us
@@ -3499,8 +3506,8 @@ void loop() {
            : effBind == BIND_ALMANAC ? PAGE_CALENDAR
                                      : PAGE_CLOCK;
     } else {
-      // Re-enter the clock orientation in the middle of its three-page strip.
-      if (pg != PAGE_CLOCK) clockView = CV_CLOCK;
+      // Re-enter the left-key orientation at its first page, Codex usage.
+      if (pg != PAGE_CLOCK) clockView = CV_USAGE;
     }
     // needs_you is the only state allowed to grab the screen (doc/06): the
     // selected seat raising its hand pulls the pet page in — desk or hand,
@@ -3564,10 +3571,8 @@ void loop() {
       }
       // the same corner pin the face wears: seat color for 10 s, then grey
       if (pinned) drawPagePin(canvas, (int32_t)(pinLitUntil - now) > 0, AGENTS[selected].color);
-      // low battery: the face's corner icon, bottom-left here (pages.cpp)
-      drawPageBatt(canvas, battFakeOn() ? battFakePct
-                           : (pmuOk && pmu.isBatteryConnect()) ? pmu.getBatteryPercent()
-                           : -1, now);
+      drawPageBatt(canvas, battFakeOn() ? battFakePct : batteryPct,
+                   now, powState == 1, usbPowered);
       int toastCy = pg == PAGE_CALENDAR ? 368
                   : (cv == CV_CLOCK ? (langEn() ? 296 : 300) : 368);   // en panel top is 320
       drawPillToast(canvas, pinLabel, pinK, toastCy);
@@ -3614,7 +3619,7 @@ void loop() {
     f.hostUp = hostUp || bleConnected();
     f.battPct = -1;
     if (battFakeOn()) f.battPct = battFakePct;
-    else if (pmuOk && pmu.isBatteryConnect()) f.battPct = pmu.getBatteryPercent();
+    else f.battPct = batteryPct;
     f.volume = audioVolume();
     // 眼神追声: eyes drift toward the last confident sound for
     // ~1.5 s, then ease back. Board axis (+ = MIC1, the right edge keys-up)
@@ -3742,6 +3747,7 @@ void loop() {
     canvas->setRotation((4 - rotSec) & 3);
     f.hideBubble = toastOnBubble && pinK > 0.0f;
     faceRender(canvas, f, now);
+    drawPageBatt(canvas, f.battPct, now, powState == 1, usbPowered, f.sessN >= 2 ? 64 : 24);
     // the 名牌 rides on top of any page; mac_approve sits where the bubble was
     drawPillToast(canvas, pinLabel, pinK, f.hideBubble ? 341 : 368);
     canvas->setRotation(0);
