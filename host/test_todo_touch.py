@@ -79,10 +79,11 @@ static bool expect(bool yes,const char* name) {
 int main() {
  bool ok=true;
  for(shownRot=0;shownRot<4;shownRot++) {
- todoN=4;todoRev=7;strcpy(todoCurrent,"task");
+ todoPending[0]=0;todoN=4;todoRev=7;strcpy(todoCurrent,"task");
  for(int i=0;i<4;i++){todoOrder[i]=i;strcpy(todoItems[i].id,i?"other":"task");todoItems[i].done=false;}
  todoView=1;gesture(126,389,126,389);
  ok &= expect(sent["done"].is<bool>() && sent["done"]==true,"detail left completes");
+ ok &= expect(!strcmp(todoPending,"task") && todoPendingDone,"detail completion has immediate feedback");
  todoView=1;gesture(347,389,347,389);
  ok &= expect(todoView==2 && sent.isNull() && focusRunning,"detail right focuses");
  todoView=2;focusRunning=true;focusEnd=1501000;gesture(126,389,126,389);

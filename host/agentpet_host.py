@@ -65,7 +65,7 @@ LOG_PATH = Path("/tmp/agentpet_host.log")
 
 # Which board this host serves: the first log line, /state and `pet status` say it.
 PRODUCT = "s3"
-HOST_VERSION = "2026-10-12-codex-todo"
+HOST_VERSION = "2026-10-12-codex-todo-ack"
 
 # `forest` (Qoder Forest, the "Qoder CN.app" desktop client, split from the
 # IDE seat 2026-09-13) MUST stay last: report_msg() emits w[]/d[] in
@@ -3353,6 +3353,7 @@ RSS_RESTART_MB = 200            # ~2.6x a healthy day (76 MB)
 MEM_LOOP_TICK_S = 30
 
 _ble_loop = None
+_ble_write_lock = None
 _ble_client = None
 link_owner_cb = [lambda m: owner_msg(m)]   # the BLE link's owner-answer hook (ble_thread)
 _ble_last_link_at = HOST_T0     # when a board was last linked (or process start); mem_loop's guard reads it
@@ -3758,16 +3759,19 @@ def mem_loop(period_s=600, stop=None, tick_s=None):
 
 def ble_send(data: bytes):
     import asyncio
-    client, loop = _ble_client, _ble_loop
-    if not client or not loop:
+    client, loop, write_lock = _ble_client, _ble_loop, _ble_write_lock
+    if not client or not loop or write_lock is None:
         return
     async def _w():
-        try:
-            for i in range(0, len(data), 100):
-                await client.write_gatt_char(NUS_RX, data[i:i + 100],
-                                             response=False)
-        except Exception as e:
-            log("ble write error:", e)
+        async with write_lock:  # keep a whole JSON line together across await points
+            if client is not _ble_client:
+                return
+            try:
+                for i in range(0, len(data), 100):
+                    await client.write_gatt_char(NUS_RX, data[i:i + 100],
+                                                 response=False)
+            except Exception as e:
+                log("ble write error:", e)
     try:
         asyncio.run_coroutine_threadsafe(_w(), loop)
     except Exception as e:
@@ -3983,7 +3987,7 @@ def power_thread():
         log("power: sleep/wake notices unavailable:", e)
 
 def ble_thread():
-    global _ble_loop, _ble_client
+    global _ble_loop, _ble_client, _ble_write_lock
     try:
         import asyncio
         from bleak import BleakClient, BleakScanner
@@ -3992,6 +3996,7 @@ def ble_thread():
         return
     _ble_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_ble_loop)
+    _ble_write_lock = asyncio.Lock()
     pool_loop_callbacks(_ble_loop)    # every CoreBluetooth callback gets a pool
 
     async def main():

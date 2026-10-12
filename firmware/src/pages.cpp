@@ -607,7 +607,7 @@ void todoSet(JsonDocument& d) {
   uint32_t rev = d["rev"] | 0U;
   if (rev != todoRev || d["ok"].is<bool>()) todoBusy = false;
   todoRev = rev;
-  if (strlen(d["error"] | "")) todoErrorUntil = millis() + 4000;
+  if (strlen(d["error"] | "")) { todoErrorUntil = millis() + 4000; todoPendingAt = 0; }
   uint8_t oldN = todoN;
   todoN = 0;
   for (JsonObject item : d["items"].as<JsonArray>()) {
@@ -668,7 +668,7 @@ void drawTodoPage(Arduino_Canvas* c, uint32_t t) {
   if (todoBusy && (int32_t)(t - todoRequestAt) > 5000) {
     todoBusy = false; todoErrorUntil = t + 4000;
   }
-  if (todoPendingAt && (int32_t)(t - todoPendingAt) > 650) { todoSort(); todoPendingAt = 0; }
+  if (todoPendingAt && !todoBusy && (int32_t)(t - todoPendingAt) > 650) { todoSort(); todoPendingAt = 0; }
   TodoItem* chosen = todoChosen();
   if (todoView && !chosen) todoView = 0;
   if (todoView) {
@@ -721,7 +721,10 @@ void drawTodoPage(Arduino_Canvas* c, uint32_t t) {
       if (checked) c->drawLine(78, y + 26, 410, y + 26, US_MUTED);
       if (item.important) c->fillCircle(437, y + 17, 3, US_PURPLE);
     }
-    if ((int32_t)(todoUndoUntil - t) > 0) {
+    if (todoBusy) {
+      c->fillRoundRect(149, 419, 182, 44, 22, TD_CARD);
+      afPrintCenter(c, TF_TITLE, 240, 441, "正在保存…", WHITE, TD_CARD);
+    } else if ((int32_t)(todoUndoUntil - t) > 0) {
       c->fillRoundRect(149, 419, 182, 44, 22, TD_CARD);
       afPrintCenter(c, TF_TITLE, 240, 441, "撤销操作", WHITE, TD_CARD);
     } else {
@@ -730,6 +733,7 @@ void drawTodoPage(Arduino_Canvas* c, uint32_t t) {
       afPrint(c, UF_SMALL, 454 - afWidth(UF_SMALL, text), 453, text, US_MUTED);
     }
   }
+  if (todoView && todoBusy) afPrintCenter(c, TF_TITLE, 240, 455, "正在保存…", US_PURPLE, BG);
   if ((int32_t)(todoErrorUntil - t) > 0) {
     c->fillRoundRect(85, 303, 310, 48, 24, US_TRACK);
     afPrintCenter(c, TF_TITLE, 240, 327, "同步失败，请重试", WHITE, US_TRACK);
@@ -740,6 +744,7 @@ void drawTodoPage(Arduino_Canvas* c, uint32_t t) {
 
 bool todoTouch(JsonDocument& command, int x, int y, int dx, int dy) {
   uint32_t now = millis();
+  if (todoBusy) return false;  // the saving indicator already explains the pending action
   TodoItem* item = todoChosen();
   bool swipe = abs(dx) > 40 || abs(dy) > 40;
   if (todoView) {
@@ -775,10 +780,14 @@ bool todoTouch(JsonDocument& command, int x, int y, int dx, int dy) {
       item = &todoItems[todoOrder[pos]];
       if (x >= 78) { strlcpy(todoCurrent, item->id, sizeof(todoCurrent)); todoView = 1; return false; }
       command["op"] = "set"; command["id"] = item->id; command["done"] = !item->done;
-      strlcpy(todoPending, item->id, sizeof(todoPending)); todoPendingDone = !item->done;
     } else return false;
   }
-  if (todoBusy || !todoAt || (int32_t)(now - todoAt) > 90000) { todoErrorUntil = now + 4000; return false; }
+  if (!todoAt || (int32_t)(now - todoAt) > 90000) { todoErrorUntil = now + 4000; return false; }
+  todoPending[0] = 0;
+  if (command["done"].is<bool>()) {
+    strlcpy(todoPending, command["id"] | "", sizeof(todoPending));
+    todoPendingDone = command["done"].as<bool>();
+  }
   command["t"] = "todo_action"; command["rev"] = todoRev;
   todoPendingAt = todoRequestAt = now; todoBusy = true;
   return true;

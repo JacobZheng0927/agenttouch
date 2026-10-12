@@ -1,3 +1,4 @@
+import asyncio
 import http.client
 import json
 from pathlib import Path
@@ -81,6 +82,24 @@ class TodoTests(unittest.TestCase):
             result = self.act(op='add', title='任'*48)
         self.assertLess(len(todo_line(result)), 4096)
         self.assertEqual(json.loads(todo_line(result))['items'][0]['title'], '任'*48)
+
+    def test_ble_todo_ack_cannot_interleave_with_heartbeat(self):
+        async def exercise():
+            chunks = []
+            class Client:
+                async def write_gatt_char(self, uuid, data, response):
+                    chunks.append(data)
+                    await asyncio.sleep(0)
+            ack = todo_line(self.act(op='add', title='完成确认'))
+            heartbeat = (json.dumps({'t': 'usage', 'padding': 'x'*300}) + '\n').encode()
+            loop = asyncio.get_running_loop()
+            with mock.patch.object(H, '_ble_client', Client()), mock.patch.object(H, '_ble_loop', loop), mock.patch.object(H, '_ble_write_lock', asyncio.Lock()):
+                H.ble_send(ack)
+                H.ble_send(heartbeat)
+                await asyncio.sleep(.05)
+            lines = b''.join(chunks).splitlines()
+            self.assertEqual(lines, [ack.rstrip(b'\n'), heartbeat.rstrip(b'\n')])
+        asyncio.run(exercise())
 
     def test_board_mutation_uses_same_store_and_broadcasts_ack(self):
         self.act(op='add', title='from Mac')

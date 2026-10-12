@@ -105,7 +105,7 @@ static bool agentEnabled(int seat) { return seat == CODEX_SEAT; }
 #define BRIGHT_DIM  100
 #define BRIGHT_LOW  40
 
-#define FW_VERSION "v1.3.1-todo"
+#define FW_VERSION "v1.3.2-todo"
 #define FW_BUILD   __DATE__ " " __TIME__   // hello "build": tells an OTA apart from the old image
 
 // Clock/calendar pages use one fixed accent — user picked blue over the

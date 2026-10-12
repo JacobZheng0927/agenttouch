@@ -109,3 +109,12 @@ board and resets when restarted; it does not control Codex or the Mac. After
 Task changes are acknowledged only after the Mac has saved them; requests time
 out after five seconds. Invalid persisted data is preserved and reported rather
 than replaced with an empty list.
+
+Completion shows an immediate check mark and a saving indicator while waiting
+for the Mac. Repeated taps during that request are ignored, and a failed or timed
+out save returns to the confirmed state. BLE writes are serialized across whole
+JSON lines so a task acknowledgement cannot be interleaved with usage/status
+updates. `host/test_todo.py` covers concurrent fragmented BLE writes;
+`host/test_todo_touch.py` exercises the actual task hit handler against the
+Arduino_Canvas pixel rotation in all four orientations (requires clang++ and
+PlatformIO's downloaded dependencies).
