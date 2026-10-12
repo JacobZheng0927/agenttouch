@@ -21,6 +21,14 @@ void todoSet(JsonDocument& d);
 void drawTodoPage(Arduino_Canvas* c, uint32_t t);
 bool todoTouch(JsonDocument& command, int x, int y, int dx, int dy);
 
+void activitySet(JsonDocument& d);
+void completedSet(JsonDocument& d);
+bool completionOpen();
+bool completionVisible(uint32_t now);
+bool completionTouch(int x, int y, int dx, int dy, uint32_t now);
+void drawActivity(Arduino_Canvas* c, uint32_t now, bool hostUp);
+void drawCompletion(Arduino_Canvas* c, uint32_t now, bool allowToast);
+
 
 // 播放页: the clock orientation's other flip side. One page,
 // two sources — the Mac's "now playing" (host {"t":"np"}) and the board's own

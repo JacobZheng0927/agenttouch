@@ -54,6 +54,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, unquote
 from codex_usage import read_account_usage, account_tokens, quota_windows, LocalTodayTokens, TZ
 from todo_store import TodoStore, todo_line
+from codex_activity import CodexActivity
 
 # ------------------------------------------------------------------ config
 TCP_PORT = 8737          # board connects here
@@ -65,7 +66,7 @@ LOG_PATH = Path("/tmp/agentpet_host.log")
 
 # Which board this host serves: the first log line, /state and `pet status` say it.
 PRODUCT = "s3"
-HOST_VERSION = "2026-10-12-codex-todo-ack"
+HOST_VERSION = "2026-10-12-codex-activity"
 
 # `forest` (Qoder Forest, the "Qoder CN.app" desktop client, split from the
 # IDE seat 2026-09-13) MUST stay last: report_msg() emits w[]/d[] in
@@ -2425,7 +2426,7 @@ def aggregate():
             # after the notify fires — measured 2026-08-27)
             recent = mt > now - ACTIVITY_WINDOW and mt > codex_notify["turn_end"] + 10
             # CPU linger must not outlive a turn-complete notify and mask "done"
-            busy = recent or (cpu_busy["codex"]
+            busy = (now - activity["at"] < 30 and (activity.get("n") or 0) > 0) or recent or (cpu_busy["codex"]
                               and _cpu_hot_last["codex"] > codex_notify["turn_end"])
             # approval request pending, and no session writes since it fired
             needs = (codex_notify["needs_until"] > now
@@ -2621,6 +2622,28 @@ def usage_snapshot():
     snap["tokens_stale"] = not snap["tokens_at"] or time.time() - snap["tokens_at"] > 600
     snap["today_stale"] = not snap["today_at"] or time.time() - snap["today_at"] > 90
     return snap
+
+activity = {"t": "activity", "n": None, "at": 0}
+
+def activity_loop():
+    global activity
+    collector = CodexActivity()
+    last_push = 0
+    while True:
+        try:
+            snap, completed = collector.read()
+        except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as e:
+            snap, completed = {"t": "activity", "n": None, "at": int(time.time())}, []
+            log("codex activity unavailable:", type(e).__name__)
+        changed = snap["n"] != activity["n"]
+        activity = snap
+        if changed or time.monotonic() - last_push >= 15:
+            push_msg(snap)
+            last_push = time.monotonic()
+        for item in completed:
+            # UTF-8 keeps CJK previews inside the board's 4096-byte line cap.
+            push_raw((json.dumps({"t": "completed", "item": item}, ensure_ascii=False) + "\n").encode())
+        time.sleep(2)
 
 def usage_loop():
     next_fetch = 0
@@ -3077,6 +3100,7 @@ def handle_board_msg(raw, reply):
         reply(time_msg())
         reply((json.dumps(usage_snapshot()) + "\n").encode())
         reply(todo_line(todos.snapshot()))
+        reply((json.dumps(activity) + "\n").encode())
         reply((json.dumps(report_msg()) + "\n").encode())
         reply((json.dumps(cfg_msg()) + "\n").encode())
         reply(sess_line())               # the session row: a rebooted board knows none
@@ -7797,7 +7821,7 @@ def state_snapshot():
                 "rtc": dict(board_rtc, boot_hello=board_rtc_boot),
                 "fw": {"build": board_build, "part": board_part},
                 "board": board_snapshot(),
-                "np": np_brief(), "usage": usage_snapshot(),
+                "np": np_brief(), "usage": usage_snapshot(), "activity": dict(activity),
                 "probe": {"seen": dict(proc_seen), "cpu": dict(proc_cpu),
                           "busy": dict(cpu_busy)}}
 
@@ -8541,6 +8565,7 @@ def main():
     np_apply()                        # media-control listener
     threading.Thread(target=watcher_loop, daemon=True).start()
     threading.Thread(target=usage_loop, daemon=True).start()
+    threading.Thread(target=activity_loop, daemon=True).start()
     threading.Thread(target=ble_thread, daemon=True).start()
     threading.Thread(target=power_thread, daemon=True).start()   # links down before a Mac sleep
     threading.Thread(target=mem_loop, daemon=True).start()

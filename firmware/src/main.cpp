@@ -1712,6 +1712,10 @@ static void handleLine(const String& line) {
     } else {
       viewUntil = 0;                        // s = 0 (or an unknown page): release
     }
+    if (pg == PAGE_FACE && d["reply"].is<bool>()) { // screenshot-only preview open/back
+      bool open = d["reply"].as<bool>();
+      if (open != completionOpen()) completionTouch(open ? 240 : 30, open ? 399 : 40, 0, 0, millis());
+    }
     noteActivity();                         // never photograph a dimmed screen
     JsonDocument r;
     r["t"] = "view"; r["id"] = d["id"] | 0; r["p"] = pv; r["ok"] = ok; r["s"] = sec;
@@ -1758,6 +1762,10 @@ static void handleLine(const String& line) {
     noteActivity();
   } else if (strcmp(t, "usage") == 0) {
     usageSet(d);
+  } else if (strcmp(t, "activity") == 0) {
+    activitySet(d);
+  } else if (strcmp(t, "completed") == 0) {
+    completedSet(d);
   } else if (strcmp(t, "todo") == 0) {
     todoSet(d);
   } else if (strcmp(t, "almanac") == 0) {   // daily cyber-almanac from host
@@ -2687,7 +2695,7 @@ static void touchPoll() {
     }
     // petting = back-and-forth rubbing, either axis, lifts allowed: the
     // finger reversing direction is what a deliberate swipe never does
-    if (tpWasDown && shownPage == PAGE_FACE && !pickedUp) {
+    if (tpWasDown && shownPage == PAGE_FACE && !pickedUp && !completionOpen()) {
       int sx = x - tpLastX, sy = y - tpLastY;
       int8_t dir = 0;
       if      (abs(sx) > 5 && abs(sx) >= abs(sy)) dir = sx > 0 ? 1 : -1;
@@ -2721,7 +2729,7 @@ static void touchPoll() {
     // (the bubble's own rule: the current session's state).
     if (tpWasDown && !tpConsumed && !pendH && !pendV && !demoStart &&
         shownPage == PAGE_FACE && !listening &&
-        sessEffState() != ST_NEEDS_YOU &&
+        sessEffState() != ST_NEEDS_YOU && !completionOpen() &&
         (int32_t)(petUntil - millis()) <= 0 &&
         (int32_t)(setCardUntil - millis()) <= 0 && !claimShowing() &&
         (int32_t)(millis() - tpDownAt) >= 1500 &&
@@ -2756,6 +2764,8 @@ static void touchPoll() {
     }
     bool vh = abs(vdx) > SWIPE_MIN_PX && abs(vdx) > 2 * abs(vdy);
     bool vv = abs(vdy) > VSWIPE_MIN_PX && 2 * abs(vdy) > 3 * abs(vdx);
+    int completionX, completionY;
+    canvasPageXY(tpLastX, tpLastY, completionX, completionY);
     if (claimShowing()) {
       // claim card owns the touch (modal). Only the green button says yes;
       // outside the card or a >=700 ms hold says no; swipes and the rest of
@@ -2777,6 +2787,20 @@ static void touchPoll() {
         Serial.printf("claim: tap %d,%d -> hit %d%s\n", vx, vy, hit, hold ? " (hold)" : "");
         if (hold || hit < 0) claimResolve(false, "declined");
         else if (hit == 1)   claimResolve(true, "tap");
+      }
+    } else if (shownPage == PAGE_FACE && !listening && !claimShowing() &&
+               sessEffState() != ST_NEEDS_YOU && (int32_t)(setCardUntil - millis()) <= 0 &&
+               (int32_t)(profUntil - millis()) <= 0 && (int32_t)(sendUntil - millis()) <= 0 &&
+               (completionOpen() || (!tpConsumed && !wasPetting && !hswipe && !vswipe &&
+                completionVisible(millis()) && completionX >= 26 && completionX <= 454 &&
+                completionY >= 370 && completionY <= 430))) {
+      int px, py, sx, sy;
+      canvasPageXY(tpLastX, tpLastY, px, py);
+      canvasPageXY(tpStartX, tpStartY, sx, sy);
+      if (completionTouch(px, py, px - sx, py - sy, millis())) {
+        tpConsumed = false;
+      } else if (!tpConsumed && !hswipe && !vswipe) {
+        nudgeUntil = millis() + 3000;
       }
     } else if (tpConsumed) {
       tpConsumed = false;    // the hold already opened the settings card
@@ -3747,6 +3771,10 @@ void loop() {
     canvas->setRotation((4 - rotSec) & 3);
     f.hideBubble = toastOnBubble && pinK > 0.0f;
     faceRender(canvas, f, now);
+    bool completionAllowed = f.st != ST_NEEDS_YOU && !f.listening && f.claimK <= 0 &&
+                             f.setK <= 0 && f.profK <= 0 && f.sendK <= 0;
+    if (completionAllowed) drawCompletion(canvas, now, true);
+    if (!completionOpen() || !completionAllowed) drawActivity(canvas, now, f.hostUp);
     drawPageBatt(canvas, f.battPct, now, powState == 1, usbPowered, f.sessN >= 2 ? 64 : 24);
     // the 名牌 rides on top of any page; mac_approve sits where the bubble was
     drawPillToast(canvas, pinLabel, pinK, f.hideBubble ? 341 : 368);

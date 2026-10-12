@@ -1286,3 +1286,122 @@ int playZoneAt(int px, int py) {
   if (px >= 320) return +1;
   return 0;
 }
+
+// Codex ambient status and one transient completion group (no unread queue).
+static int activityN = -1;
+static uint32_t activityAt = 0;
+struct CompletionItem { char title[145], body[601], meta[64]; };
+static CompletionItem completedItems[4], detailItems[4];
+static int completedN = 0, completedTotal = 0, detailN = 0, detailIndex = 0, detailPage = 0;
+static uint32_t completedUntil = 0;
+static bool detailOpen = false;
+static char completedIds[16][96] = {};
+static uint8_t completedIdNext = 0;
+
+void activitySet(JsonDocument& d) {
+  activityN = d["n"].is<int>() && d["n"].as<int>() >= 0 ? min(d["n"].as<int>(), 999) : -1;
+  activityAt = millis();
+}
+
+bool completionOpen() { return detailOpen; }
+bool completionVisible(uint32_t now) { return completedN && (int32_t)(completedUntil - now) > 0; }
+
+void completedSet(JsonDocument& d) {
+  JsonObject item = d["item"].as<JsonObject>();
+  const char* id = item["id"] | "";
+  if (!*id || strlen(id) >= sizeof(completedIds[0])) return;
+  for (auto& old : completedIds) if (!strcmp(old, id)) return;
+  strlcpy(completedIds[completedIdNext], id, sizeof(completedIds[0]));
+  completedIdNext = (completedIdNext + 1) % 16;
+  uint32_t now = millis();
+  if (!completionVisible(now)) {
+    completedN = completedTotal = 0;
+    completedUntil = now + 8000;
+  }
+  completedTotal++;
+  if (completedN == 4) {
+    for (int i = 1; i < 4; i++) completedItems[i - 1] = completedItems[i];
+    completedN--;
+  }
+  CompletionItem& dst = completedItems[completedN++];
+  strlcpy(dst.title, item["title"] | "Codex", sizeof(dst.title));
+  strlcpy(dst.body, item["body"] | "", sizeof(dst.body));
+  strlcpy(dst.meta, item["meta"] | "", sizeof(dst.meta));
+}
+
+// Layout once per frame; page limits follow the same UTF-8 wrapping as drawing.
+static int completionBody(Arduino_Canvas* c, const char* text, int page) {
+  const char* p = text;
+  int line = 0, pen = 26;
+  while (*p) {
+    if (*p == '\n') { p++; line++; pen = 26; continue; }
+    uint32_t cp;
+    if (((uint8_t)*p & 0xF8) == 0xF0) { cp = '?'; p += 4; }
+    else cp = afDecode(p);
+    const uint8_t* glyph = afGlyph(TF_TITLE, cp);
+    if (!glyph) { cp = '?'; glyph = afGlyph(TF_TITLE, cp); }
+    int advance = glyph ? glyph[2] : 19;
+    if (pen + advance > 454) { line++; pen = 26; }
+    if (c && line / 8 == page)
+      afChar(c, TF_TITLE, pen, 183 + (line % 8) * 32, cp, WHITE, BG);
+    pen += advance;
+  }
+  return line / 8;
+}
+
+bool completionTouch(int x, int y, int dx, int dy, uint32_t now) {
+  if (detailOpen) {
+    if (y < 70 && abs(dx) < 40 && abs(dy) < 40) { detailOpen = false; return true; }
+    if (abs(dy) > 40 && abs(dy) > abs(dx)) {
+      detailPage = constrain(detailPage + (dy < 0 ? 1 : -1), 0,
+                             completionBody(nullptr, detailItems[detailIndex].body, 0));
+    } else if (abs(dx) > 40 && abs(dx) > abs(dy)) {
+      detailIndex = constrain(detailIndex + (dx < 0 ? 1 : -1), 0, detailN - 1);
+      detailPage = 0;
+    }
+    return true;
+  }
+  if (completionVisible(now) && x >= 26 && x <= 454 && y >= 370 && y <= 430 && abs(dx) < 40 && abs(dy) < 40) {
+    memcpy(detailItems, completedItems, sizeof(detailItems));
+    detailN = completedN; detailIndex = completedN - 1; detailPage = 0;
+    detailOpen = true; completedUntil = 0;
+    return true;
+  }
+  return false;
+}
+
+void drawActivity(Arduino_Canvas* c, uint32_t now, bool hostUp) {
+  bool known = hostUp && activityAt && (int32_t)(now - activityAt) <= 45000 && activityN >= 0;
+  uint16_t color = known && activityN ? C565(0xBE, 0xB9, 0xFF) : US_MUTED;
+  c->fillRect(20, 18, 85, 36, BG);
+  if (known) c->fillCircle(28, 36, 3, known && activityN ? US_PURPLE : GREYDIM);
+  else c->drawCircle(28, 36, 3, GREYDIM);
+  char text[8];
+  if (known) snprintf(text, sizeof(text), "%d", activityN);
+  else strlcpy(text, "--", sizeof(text));
+  almanacPrintSmall(c, 42, 43, text, color, BG);
+}
+
+void drawCompletion(Arduino_Canvas* c, uint32_t now, bool allowToast) {
+  if (detailOpen) {
+    c->fillScreen(BG);
+    afPrint(c, UF_TEXT, 26, 43, "<", US_MUTED);
+    afPrint(c, UF_SMALL, 118, 43, "REPLY PREVIEW", US_MUTED);
+    todoText(c, detailItems[detailIndex].title, 26, 94, 428, 2, WHITE);
+    afPrint(c, UF_SMALL, 26, 150, detailItems[detailIndex].meta, US_MUTED);
+    completionBody(c, detailItems[detailIndex].body, detailPage);
+    char text[64];
+    snprintf(text, sizeof(text), "%d/%d REPLIES  |  %d/%d PAGES", detailIndex + 1, detailN,
+             detailPage + 1, completionBody(nullptr, detailItems[detailIndex].body, 0) + 1);
+    afPrint(c, UF_SMALL, 26, 457, text, US_MUTED);
+  } else if (allowToast && completionVisible(now)) {
+    c->fillRoundRect(26, 374, 428, 50, 16, TD_CARD);
+    c->drawLine(43, 399, 49, 405, US_PURPLE);
+    c->drawLine(49, 405, 61, 391, US_PURPLE);
+    char text[160];
+    if (completedTotal > 1) snprintf(text, sizeof(text), "%d 个会话已回复", completedTotal);
+    else strlcpy(text, completedItems[0].title, sizeof(text));
+    char fitted[160]; almanacFit(fitted, sizeof(fitted), text, 350, true);
+    almanacPrintSmall(c, 76, 405, fitted, WHITE, TD_CARD);
+  }
+}

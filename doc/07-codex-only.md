@@ -76,7 +76,7 @@ board, hold the left key for one second on the face page to pin it (hold again
 to unpin).
 
 After updating the host manually, copy `agentpet_host.py`, `codex_usage.py` and
-`todo_store.py`, plus `firmware/fonts/IBMPlexSans-{Bold,SemiBold}.ttf` and
+`todo_store.py` and `codex_activity.py`, plus `firmware/fonts/IBMPlexSans-{Bold,SemiBold}.ttf` and
 `firmware/fonts/LICENSE-OFL.txt` into `~/.agentpet/`, then restart
 `com.agentpet.host`. `host/setup.sh` includes these files automatically.
 
@@ -124,3 +124,31 @@ battery is detected, a lightning mark while charging, USB when externally
 powered without a detected battery, and -- when the level is unknown. The PMU
 reading is cached from the existing two-second power poll. Dates move left to
 leave the status badge clear.
+
+The face page keeps a small dot and the number of running Codex Desktop main
+threads at the top left. The host reads the local state index read-only and
+incrementally follows task_started/task_complete/turn_aborted events; archived
+threads and spawned agents are excluded. The desktop backend must be running.
+Counts refresh every two seconds and heartbeat every 15 seconds. An active
+rollout quiet for 15 minutes makes the count unknown; unreadable data does too.
+The board shows -- after 45 seconds without an activity update or when offline.
+This is this Mac's active-turn count, not all saved chats or an account total.
+An open turn waiting on a tool/approval is still an ongoing turn.
+
+Each completed turn produces one transient notice, deduplicated by thread and
+turn ID on the host and across TCP/BLE on the board. Old completions are not
+replayed when the host starts or a board reconnects. Notices on the face page
+merge within a fixed eight-second window; a new completion does not extend it.
+They never switch orientation pages or displace a permission prompt. Tap the
+notice to open the title, completion time/duration and final-reply preview.
+Swipe vertically for pages, horizontally for replies; tap < to return. An open
+preview stays until returned and receives no text replacements. The transient
+group retains the latest four previews, with no unread counter or persistent
+queue. Previews are plain text capped at 600 UTF-8 bytes (ellipsis when trimmed),
+and titles at 144 bytes; no conversation history or credentials are sent.
+Run host/test_codex_activity.py and host/test_activity_touch.py for lifecycle,
+deduplication, expiry, merging and rotated detail-hit checks.
+For USB layout captures, the existing debug view message accepts
+`{"t":"view","p":"face","s":20,"reply":true}` to tap an active completion
+notice through its real hit handler; reply:false taps Back. It does not create
+or replay a completion.
