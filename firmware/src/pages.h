@@ -2,10 +2,11 @@
 // Licensed under PolyForm Noncommercial 1.0.0 (see LICENSE)
 #pragma once
 #include <Arduino_GFX_Library.h>
+#include <ArduinoJson.h>
 
 // Extra pages shown by placement orientation (face page stays in face.cpp).
-// The clock orientation has two flip sides: 播客 on the right
-// swipe and 当前播放 on the left, both drawn by drawPlayPage.
+// The clock orientation has Codex usage on the right swipe and Mac now
+// playing on the left swipe.
 enum PageId : uint8_t { PAGE_FACE = 0, PAGE_CLOCK, PAGE_CALENDAR };
 
 void clockSet(uint32_t localEpoch);   // seconds, timezone already applied
@@ -14,6 +15,8 @@ uint32_t clockEpoch();                // current local seconds, 0 if never set
 
 void drawClockPage(Arduino_Canvas* c, uint32_t t, uint16_t accent);
 void drawCalendarPage(Arduino_Canvas* c, uint32_t t, uint16_t accent);
+void usageSet(JsonDocument& d);
+void drawUsagePage(Arduino_Canvas* c, uint32_t t, uint16_t accent);
 
 
 // 播放页: the clock orientation's other flip side. One page,

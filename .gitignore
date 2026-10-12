@@ -7,3 +7,4 @@ firmware/src/config.local.h
 firmware/platformio.local.ini
 # baked on your Mac from its system fonts before the first build (firmware/gen_font_table.py)
 firmware/src/almanac_font.h
+firmware/src/usage_font.h

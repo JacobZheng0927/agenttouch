@@ -246,14 +246,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("t", H.board_rtc)
         self.assertGreater(H.board_rtc_at, 0)
 
-    def test_hello_gets_time_almanac_report_cfg(self):
+    def test_hello_gets_time_usage_report_cfg(self):
         before = int(time.time())
         self.feed({"t": "hello", "dev": "amoled216", "v": 1, "rtc": 1788899000})
         self.assertEqual(H.board_rtc_boot, 1788899000)
         kinds = [json.loads(r)["t"] for r in self.replies]
         # a TCP hello is first told who we are (认领制: IP drift, first owner)
         # ... and the Claude session row last (empty with no sessions)
-        self.assertEqual(kinds, ["hostinfo", "time", "almanac", "report", "cfg", "sess"])
+        self.assertEqual(kinds, ["hostinfo", "time", "usage", "report", "cfg", "sess"])
         tm = json.loads(self.replies[1])
         self.assertAlmostEqual(tm["epoch"], before, delta=5)      # UTC seconds ...
         self.assertEqual(tm["off"], time.localtime().tm_gmtoff)   # ... plus the host's tz offset
@@ -2055,9 +2055,8 @@ class NowPlayingBoardMsgTests(unittest.TestCase):
         self.assertEqual(self._routed({"t": "np_miss", "cover": "/agentpet/covers/a.jpg"},
                                       "np_miss"), ["/agentpet/covers/a.jpg"])
 
-    def test_a_tcp_hello_with_a_card_restarts_the_pending_audio_push(self):
-        """A 40 MB episode does not survive a host restart, so every hello has
-        to re-offer whatever is still only on this Mac."""
+    def test_a_tcp_hello_does_not_start_disabled_podcast_jobs(self):
+        """Codex-only firmware does not download/push podcasts or almanacs."""
         got, done = [], threading.Event()
         old_pend, old_year = H.au_push_pending, H.almanac_push_year
         H.au_push_pending = lambda delay=0.0: (got.append(delay), done.set(), [])[2]
@@ -2065,10 +2064,10 @@ class NowPlayingBoardMsgTests(unittest.TestCase):
         try:
             H.handle_board_msg(json.dumps({"t": "hello", "dev": "amoled216",
                                            "sd": 32000, "sdrw": True}), lambda _b: None)
-            self.assertTrue(done.wait(3), "hello never reached au_push_pending")
+            self.assertFalse(done.is_set())
         finally:
             H.au_push_pending, H.almanac_push_year = old_pend, old_year
-        self.assertEqual(len(got), 1)
+        self.assertEqual(len(got), 0)
 
     def test_a_ble_hello_does_not_start_a_card_push(self):
         """fbeg/fdat is a TCP path; a BLE-only hello has no card link to use."""

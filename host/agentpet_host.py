@@ -52,6 +52,7 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote
+from codex_usage import read_account_usage, account_tokens, quota_windows, TZ
 
 # ------------------------------------------------------------------ config
 TCP_PORT = 8737          # board connects here
@@ -63,7 +64,7 @@ LOG_PATH = Path("/tmp/agentpet_host.log")
 
 # Which board this host serves: the first log line, /state and `pet status` say it.
 PRODUCT = "s3"
-HOST_VERSION = "2026-10-12-codex"
+HOST_VERSION = "2026-10-12-codex-usage"
 
 # `forest` (Qoder Forest, the "Qoder CN.app" desktop client, split from the
 # IDE seat 2026-09-13) MUST stay last: report_msg() emits w[]/d[] in
@@ -2599,7 +2600,44 @@ def time_msg():
                         "off": time.localtime().tm_gmtoff}) + "\n").encode()
 
 def push_time():
-    push_raw(time_msg() + (json.dumps(almanac_msg()) + "\n").encode())
+    push_raw(time_msg())
+
+usage = {"t": "usage", "today": None, "week": None, "windows": [],
+         "tokens_at": 0, "quota_at": 0, "date": "", "week_start": ""}
+usage_lock = threading.Lock()
+
+def usage_snapshot():
+    with usage_lock:
+        snap = dict(usage)
+    snap["status"] = ("UNAVAILABLE" if not snap["quota_at"] else
+                      "STALE" if time.time() - snap["quota_at"] > 600 else "LIVE")
+    snap["tokens_stale"] = not snap["tokens_at"] or time.time() - snap["tokens_at"] > 600
+    return snap
+
+def usage_loop():
+    next_fetch = 0
+    while True:
+        now = datetime.datetime.now(TZ)
+        if now.strftime("%Y%m%d") != usage["date"]:
+            with usage_lock:
+                usage.update(today=None, week=None, tokens_at=0, date=now.strftime("%Y%m%d"),
+                             week_start=(now - datetime.timedelta(days=now.weekday())).strftime("%Y%m%d"))
+            next_fetch = 0
+        if time.monotonic() >= next_fetch:
+            try:
+                limits, daily = read_account_usage()
+                windows = quota_windows(limits)
+                today, week = account_tokens(daily, now.date())
+                with usage_lock:
+                    if limits is not None:
+                        usage.update(windows=windows, quota_at=int(time.time()) if windows else 0)
+                    if daily is not None:
+                        usage.update(today=today, week=week, tokens_at=int(time.time()))
+            except (OSError, ValueError, RuntimeError, KeyError) as e:
+                log("account usage unavailable:", type(e).__name__)
+            next_fetch = time.monotonic() + 300
+        push_msg(usage_snapshot())
+        time.sleep(30)
 
 def watcher_loop():
     prev = None
@@ -3018,18 +3056,10 @@ def handle_board_msg(raw, reply):
             if m.get("sd") and not m.get("link"):        # TCP hello + card present
                 threading.Thread(target=fonts_ensure, args=(2,), daemon=True).start()
                 threading.Thread(target=push_queue_drain, daemon=True).start()
-                def _year():
-                    time.sleep(3)                          # let hello traffic settle
-                    r = almanac_push_year()
-                    if not r.get("skipped"):
-                        log("almanac year push:", r)
-                threading.Thread(target=_year, daemon=True).start()
-                threading.Thread(target=au_push_pending, args=(6,),   # after the almanac, same reason
-                                 daemon=True).start()
         if not m.get("link"):            # TCP: say who we are (IP drift, first owner)
             reply(hostinfo_msg())
         reply(time_msg())
-        reply((json.dumps(almanac_msg()) + "\n").encode())
+        reply((json.dumps(usage_snapshot()) + "\n").encode())
         reply((json.dumps(report_msg()) + "\n").encode())
         reply((json.dumps(cfg_msg()) + "\n").encode())
         reply(sess_line())               # the session row: a rebooted board knows none
@@ -5177,7 +5207,6 @@ def prime_voices():
             for a in AGENTS:
                 tts_wav(phrase_needs(a))
                 tts_wav(phrase_done(a))
-        tts_wav(qian_text(), TTS_VOICES["zh"])   # 求签 works in either style and language
     except Exception as e:
         log("prime voices:", e)
 
@@ -6540,7 +6569,10 @@ SETTINGS_T = {
   "page_pickup": "拿起时显示", "pdesc_pickup": "把板子拿起来那一刻显示哪一页。",
   "page_behavior": "行为", "pdesc_behavior": "板子与 Mac 前台互相跟随的规则。",
   "page_np": "正在播放", "pdesc_np": "把 Mac 正在播的东西显示在板上。",
-  "page_audio": "听什么", "pdesc_audio": "给板上播放器加播客或音频，转码后推上卡。",
+  "page_usage": "Codex 用量", "pdesc_usage": "账户额度与官方今天／本周 Token 用量。",
+  "usage_today": "今天 Token", "usage_week": "本周 Token", "usage_note": "Token 来自官方账户每日分桶，沿用服务端日期，本周从周一开始；可能延迟。每 5 分钟刷新。重置时间为北京时间。",
+  "usage_wait": "暂不可用", "usage_left": "剩余", "usage_reset": "重置", "usage_stale": "额度数据已过期", "usage_live": "额度已同步",
+  "usage_at": "更新时间", "usage_pending": "待同步", "usage_used": "已用",
   "page_host": "host", "pdesc_host": "常驻服务本身：重启、日志、调试按钮。",
   "page_wifi": "板子", "pdesc_wifi": "板子跟着哪台 Mac，能连哪些 Wi-Fi（它会自动连信号最强的那个）。",
   "ow_title": "跟着哪台 Mac", "ow_mine": "跟着这台（{0}）", "ow_standby": "跟着「{0}」。这台在待机，不抢蓝牙",
@@ -6577,7 +6609,7 @@ SETTINGS_T = {
   "st_off": "离线", "st_idle": "空闲", "st_working": "干活中", "st_needs_you": "等你", "st_done": "干完了",
   "rsn_scanning": "扫描中", "rsn_bt_off": "Mac 蓝牙已关", "rsn_stuck": "蓝牙栈卡住，host 正在自愈",
   "ov_seats": "席位", "ov_seats_sub": "当前席位带白框", "ov_np": "正在播放",
-  "fn_title": "卡上字库", "fn_ok": "{0} 个字库都在卡上", "fn_nocard": "板子没插 microSD 卡：黄历页很多字会显示成方框",
+  "fn_title": "卡上字库", "fn_ok": "{0} 个字库都在卡上", "fn_nocard": "没有 microSD 卡；时钟、Codex 用量和宠物页均可使用",
   "fn_wait": "等板子连上 Wi-Fi 再查（字库只能经 Wi-Fi 推）", "fn_checking": "正在查卡上的字库……",
   "fn_baking": "正在用这台 Mac 的系统字体生成 {0} 个字库……", "fn_pushing": "正在推 {0}（第 {1}/{2} 个）· 共 {3}%",
   "fn_nopil": "缺 Pillow，生成不了字库：重跑 host/setup.sh，或 /usr/bin/python3 -m pip install --user pillow",
@@ -6660,7 +6692,10 @@ SETTINGS_T = {
   "page_pickup": "Pickup", "pdesc_pickup": "Which page the board shows the moment you pick it up.",
   "page_behavior": "Behavior", "pdesc_behavior": "How the board and the Mac's front app follow each other.",
   "page_np": "Now Playing", "pdesc_np": "Show what the Mac is playing on the board.",
-  "page_audio": "Listen", "pdesc_audio": "Add podcasts or audio to the board's player. They're converted and copied to the card.",
+  "page_usage": "Codex usage", "pdesc_usage": "Account quota and official today / this week tokens.",
+  "usage_today": "Today tokens", "usage_week": "This week tokens", "usage_note": "Official account daily buckets, using service dates; week starts Monday. Publication may lag. Refreshes every 5 minutes; reset time is UTC+8.",
+  "usage_wait": "Unavailable", "usage_left": "remaining", "usage_reset": "reset", "usage_stale": "Quota data is stale", "usage_live": "Quota synced",
+  "usage_at": "Updated", "usage_pending": "Pending", "usage_used": "USED",
   "page_host": "Host", "pdesc_host": "The background service itself: restart, log, and debug buttons.",
   "page_wifi": "Board", "pdesc_wifi": "Which Mac the board follows, and the Wi-Fi networks it can join (it picks the strongest one in range).",
   "ow_title": "Follows", "ow_mine": "This Mac ({0})", "ow_standby": "“{0}”. This Mac is on standby and leaves Bluetooth alone",
@@ -6697,7 +6732,7 @@ SETTINGS_T = {
   "st_off": "Offline", "st_idle": "Idle", "st_working": "Working", "st_needs_you": "Needs You", "st_done": "Done",
   "rsn_scanning": "Scanning", "rsn_bt_off": "Mac Bluetooth is off", "rsn_stuck": "Bluetooth stack stuck; the host is recovering",
   "ov_seats": "Seats", "ov_seats_sub": "The current seat is outlined", "ov_np": "Now Playing",
-  "fn_title": "Card Fonts", "fn_ok": "All {0} fonts are on the card", "fn_nocard": "No microSD card in the board: many characters on the almanac page will show as boxes",
+  "fn_title": "Card Fonts", "fn_ok": "All {0} fonts are on the card", "fn_nocard": "No microSD card; clock, Codex usage and pet pages still work",
   "fn_wait": "Checked once the board is on Wi-Fi (fonts only go over Wi-Fi)", "fn_checking": "Checking the fonts on the card…",
   "fn_baking": "Building {0} fonts from this Mac's system fonts…", "fn_pushing": "Pushing {0} ({1} of {2}) · {3}% overall",
   "fn_nopil": "Pillow is missing, so the fonts can't be built: rerun host/setup.sh, or /usr/bin/python3 -m pip install --user pillow",
@@ -6910,6 +6945,27 @@ footer .sp{flex:1}
 .memn i{font-style:normal;font-size:11px;color:rgba(255,255,255,.40)}
 .lang{display:flex;margin:0 8px 16px}
 .lang label{flex:1;text-align:center}
+
+@font-face{font-family:UsagePlex;src:url('/usage/font/Bold') format('truetype');font-weight:700}
+@font-face{font-family:UsagePlex;src:url('/usage/font/SemiBold') format('truetype');font-weight:600}
+.usage-panel{font-family:UsagePlex,system-ui,sans-serif;font-weight:600;max-width:600px;padding:22px;background:#000;border:1px solid #202328;border-radius:16px;color:#fff}
+.usage-head,.usage-label,.usage-foot{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.usage-head{padding-bottom:20px;border-bottom:1px solid #202328;letter-spacing:2.5px;font-size:21px}
+.usage-head b:before{content:'';display:inline-block;background:#6f78ff;width:12px;height:12px;border-radius:50%;margin-right:14px}
+.usage-head small{font-size:14px;color:#9298a2;letter-spacing:1px}
+.usage-label{margin-top:20px;color:#9298a2;font-size:21px;letter-spacing:1px}
+.usage-label small{color:#6f78ff;font-size:14px}
+.usage-hero{font-size:clamp(96px,18vw,164px);font-weight:700;letter-spacing:-9px;line-height:1.2;margin:8px 0 20px;font-variant-numeric:tabular-nums}
+.usage-track{height:20px;border-radius:12px;background:#303238;overflow:hidden}
+.usage-fill{height:100%;background:#6f78ff;border-radius:12px;transition:width .3s}
+.usage-reset{margin:18px 0 24px;color:#9298a2;font-size:16px}
+.usage-stats{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.usage-number{font-size:clamp(20px,3vw,35px);font-weight:700;color:#6f78ff;font-variant-numeric:tabular-nums;white-space:nowrap}
+.usage-caption{margin-top:6px;color:#9298a2;font-size:14px;letter-spacing:1px}
+.usage-range{font-size:12px;color:#9298a2;margin-top:4px}
+.usage-foot{margin-top:28px;color:#9298a2;font-size:14px}
+.usage-panel+.cap{max-width:640px}
+
 </style></head><body>
 <aside>
  <div class="brand"><div class="lg"><svg width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="7.5" cy="10" r="3" fill="#fff"/><circle cx="14.5" cy="10" r="3" fill="#fff"/></svg></div>
@@ -6993,7 +7049,7 @@ footer .sp{flex:1}
  <div class="page" data-page="pickup">
   <section><div class="grp">
    <div class="row"><div class="lab"><span data-t="pk_t"></span><small data-t="pk_sub"></small></div>
-    <div class="seg" id="pk"><label><input type="radio" name="pk" value="follow"><span>follow</span></label><label><input type="radio" name="pk" value="face"><span>face</span></label><label><input type="radio" name="pk" value="clock"><span>clock</span></label><label><input type="radio" name="pk" value="almanac"><span>almanac</span></label><label><input type="radio" name="pk" value="smart"><span>smart</span></label></div></div>
+    <div class="seg" id="pk"><label><input type="radio" name="pk" value="follow"><span>follow</span></label><label><input type="radio" name="pk" value="face"><span>face</span></label><label><input type="radio" name="pk" value="clock"><span>clock</span></label><label><input type="radio" name="pk" value="almanac"><span>calendar</span></label><label><input type="radio" name="pk" value="smart"><span>smart</span></label></div></div>
   </div></section>
  </div>
 
@@ -7013,14 +7069,20 @@ footer .sp{flex:1}
   </div></section>
  </div>
 
- <div class="page" data-page="audio">
-  <section><div class="grp">
-   <div class="row" style="min-height:60px"><input type="text" class="g" id="au" data-tp="au_ph">
-    <select id="aun"><option value="1" data-t="au_n1"></option><option value="3" data-t="au_n3"></option><option value="5" data-t="au_n5"></option></select>
-    <button class="pri sm" onclick="auAdd()" data-t="add"></button></div>
-   <div class="row"><div class="lab"><span data-t="queue"></span><small id="aust" data-t="loading_dots"></small></div></div>
-   <div id="aulist"></div>
-  </div><p class="cap" data-t="au_cap"></p></section>
+ <div class="page" data-page="usage">
+  <div class="usage-panel">
+   <div class="usage-head"><b>CODEX</b><small id="usageDate"></small></div>
+   <div class="usage-label"><span id="usagePeriod"></span><small id="usageLeft"></small></div>
+   <div class="usage-hero" id="usageUsed">—</div>
+   <div class="usage-track"><div class="usage-fill" id="usageBar" style="width:0"></div></div>
+   <div class="usage-reset" id="usageReset"></div>
+   <div class="usage-stats">
+    <div><div class="usage-number" id="usageToday">—</div><div class="usage-caption" data-t="usage_today"></div></div>
+    <div><div class="usage-number" id="usageWeek">—</div><div class="usage-caption" data-t="usage_week"></div><div class="usage-range" id="usageWeekStart"></div></div>
+   </div>
+   <div class="usage-foot"><span id="usageStatus"></span><span id="usageQuota"></span></div>
+   <div class="usage-range" id="usageAt"></div>
+  </div><p class="cap" data-t="usage_note"></p>
  </div>
 
  <div class="page" data-page="host">
@@ -7040,8 +7102,7 @@ footer .sp{flex:1}
    <div class="row"><div class="lab"><span data-t="dbg"></span><small data-t="dbg_sub"></small></div></div>
    <div class="dbg">
     <button class="sm" onclick="hit('/test/faces')" data-t="b_faces"></button>
-    <button class="sm" onclick="hit('/test/qian')" data-t="b_qian"></button>
-    <button class="sm" onclick="hit('/test/almanac')" data-t="b_alm"></button>
+    <button class="sm" onclick="hit('/test/view/usage?s=30')" data-t="page_usage"></button>
     <button class="sm" onclick="hit('/test/report')" data-t="b_rep"></button>
     <button class="sm" onclick="hit('/test/profile')" data-t="b_prof"></button>
     <button class="sm" onclick="hit('/test/stretch')" data-t="b_str"></button>
@@ -7077,11 +7138,11 @@ const ICON={
  pickup:'<rect x="3" y="2" width="10" height="12" rx="2"/><path d="M6 11h4"/>',
  behavior:'<path d="M2 8h12M9 4l4 4-4 4"/>',
  np:'<circle cx="8" cy="8" r="6"/><path d="M6.5 5.5v5l4-2.5z"/>',
- audio:'<path d="M3 11V6a5 5 0 0110 0v5"/><rect x="2" y="9" width="3" height="4" rx="1"/><rect x="11" y="9" width="3" height="4" rx="1"/>',
+ usage:'<path d="M3 13V9M8 13V3M13 13V6"/>',
  wifi:'<path d="M1.5 6a9.5 9.5 0 0113 0M3.8 8.4a6.3 6.3 0 018.4 0M6 10.8a3.2 3.2 0 014 0"/><circle cx="8" cy="13" r=".8" fill="currentColor"/>',
  host:'<rect x="2" y="3" width="12" height="5" rx="1.5"/><rect x="2" y="9" width="12" height="4" rx="1.5"/><circle cx="4.5" cy="5.5" r=".7" fill="currentColor"/><circle cx="4.5" cy="11" r=".7" fill="currentColor"/>'};
 // page ids; titles and one-liners are T keys page_<id> / pdesc_<id>
-const PAGES=['overview','wifi','seats','sound','mic','pickup','behavior','np','audio','host'];
+const PAGES=['overview','wifi','seats','sound','mic','pickup','behavior','np','usage','host'];
 function toast(t){const e=$('#toast');e.textContent=t;e.style.opacity=1;
  clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.opacity=0,1800)}
 function hit(p){fetch(API+p).then(r=>r.text()).then(t=>toast(t.slice(0,60)))}
@@ -7109,7 +7170,7 @@ function applyLang(){
  document.querySelectorAll('[name=lang]').forEach(r=>r.checked=r.value===L);
  document.querySelectorAll('.seat[data-a] .lab>span:first-child').forEach(e=>e.textContent=seatNm(e.closest('.seat').dataset.a));
  document.querySelectorAll('[data-k="focus_apps"]').forEach(mirrorApp);
- route();if(lastD)status(lastD);auTick();memTick()}
+ route();if(lastD)status(lastD);usageTick();memTick()}
 document.querySelectorAll('[name=lang]').forEach(r=>r.onchange=()=>{
  const v=r.value;if(v===L)return;L=v;applyLang();
  fetch(API+'/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -7316,7 +7377,6 @@ $('#vol').onchange=e=>{hit('/test/volume/'+e.target.value)};
 function doSay(){const v=$('#sayt').value.trim();
  if(v)hit('/test/say/'+encodeURIComponent(v))}
 $('#sayt').addEventListener('keydown',e=>{if(e.key==='Enter')doSay()});
-const auStep=s=>(('austep_'+s) in T.zh)?t('austep_'+s):s;
 // ---- 扫描本机: the host looks, the page only shows and picks ----
 function scLoad(say){fetch(API+'/agents/scan').then(r=>r.json()).then(d=>{
  const box=$('#sclist');box.textContent='';
@@ -7370,41 +7430,22 @@ function wfAdd(){const s=$('#wfs').value.trim(),p=$('#wfp').value;if(!s)return;
 function wfRm(s){if(!confirm(tf('wf_rm_q',s)))return;
  wfPost({op:'rm',ssid:s}).then(d=>{toast(d.ok?t('wf_rmd'):wfWhy(d.why));if(d.nets)wfPaint(d)})}
 function esc(s){const d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML}
-function fmtd(s){s=Math.round(+s||0);if(!s)return '—';if(s<60)return tf('dur_s',s);
- const m=Math.floor(s/60);
- return m>=60?tf('dur_hm',Math.floor(m/60),m%60):tf('dur_m',m)}
-function auMsg(d){const j=d.job;
- if(j)return auStep(j.step)+': '+(j.title||j.name)
-  +((j.pct!=null&&(j.step=='download'||j.step=='push'))?' '+j.pct+'%':'')+' · '+j.elapsed_s+' s'
-  +(d.queue.length?' '+tf('au_more',d.queue.length):'');
- if(d.queue.length)return tf('au_queued',d.queue.length);
- if(d.pending.length)return tf(d.tcp?'au_pend_tcp':'au_pend_wait',d.pending.length);
- const last=(d.done||[])[0];
- if(last&&!last.ok)return tf('au_lastfail',last.why||'');
- return t(d.tcp?'au_idle':'au_idle_off')}
-function auAdd(){const v=$('#au').value.trim();if(!v)return;
- const q=v[0]=='/'||v[0]=='~'?'file='+encodeURIComponent(v)
-  :'url='+encodeURIComponent(v)+'&n='+$('#aun').value;
- fetch(API+'/audio/add?'+q).then(r=>r.json()).then(d=>{toast(d.ok?t('au_added'):(d.why||t('au_addfail')));
-  if(d.ok)$('#au').value='';auTick()})}
-function auRm(n){if(!confirm(tf('au_rm_q',n)))return;
- fetch(API+'/audio/rm?id='+encodeURIComponent(n)).then(r=>r.json())
-  .then(d=>{toast(d.ok?t('au_rmd'):(d.why||t('au_rmfail')));auList();auTick()})}
-function auList(){fetch(API+'/audio/list').then(r=>r.json()).then(d=>{
- $('#aulist').innerHTML=d.items.length?d.items.map(x=>
-  '<div class="au"><span class="t">'+esc(x.title||x.name)+'</span>'
-  +'<span class="m">'+esc(showNm(x.show))+(x.show?' · ':'')+fmtd(x.dur)
-  +' · '+(x.pushed?t('au_pushed'):t('au_pending'))+'</span>'
-  +'<button class="sm" onclick="auRm(&quot;'+esc(x.name)+'&quot;)">'+esc(t('del'))+'</button></div>').join('')
-  :'<div class="au"><span class="m">'+esc(t('au_empty'))+'</span></div>'})}
-// sidecars written before the switch (or in the other language) keep their word
-const showNm=s=>(s==='本地文件'||s==='Local file')?t('local_file'):s;
-let auBusy=null,auN=0;
-function auTick(){fetch(API+'/audio/status').then(r=>r.json()).then(d=>{
- const a=$('#aust');delete a.dataset.t;a.textContent=auMsg(d);
- if(d.busy!==auBusy||auN%4===0){auBusy=d.busy;auList()}
- auN++}).catch(()=>{})}
-auTick();setInterval(auTick,3000);
+function usageTick(){fetch(API+'/usage').then(r=>r.json()).then(d=>{
+ const fmt=n=>n==null?t('usage_pending'):n.toLocaleString(L==='zh'?'zh-CN':'en-US');
+ $('#usageToday').textContent=fmt(d.today);$('#usageWeek').textContent=fmt(d.week);
+ $('#usageDate').textContent=d.date;$('#usageWeekStart').textContent=d.week_start+' – '+d.date;
+ const w=d.windows[0],used=w?100-w.left:null;
+ $('#usagePeriod').textContent=(w?w.label:'—')+' '+t('usage_used');
+ $('#usageUsed').textContent=used==null?'—':fmt(used)+'%';
+ $('#usageLeft').textContent=(w?fmt(w.left)+'%':'—')+' '+t('usage_left');
+ $('#usageBar').style.width=(used||0)+'%';
+ $('#usageReset').textContent=t('usage_reset')+' '+(w?w.reset+' UTC+8':'—');
+ $('#usageQuota').textContent=d.windows.slice(1).map(w=>w.label+' '+fmt(w.left)+'% '+t('usage_left')+' · '+t('usage_reset')+' '+w.reset+' UTC+8').join(' / ');
+ $('#usageStatus').textContent=t(d.status==='LIVE'?'usage_live':d.status==='STALE'?'usage_stale':'usage_wait')+(d.tokens_stale?' · Token STALE':'');
+ const stamp=n=>n?new Date(n*1000).toLocaleString(L==='zh'?'zh-CN':'en-US',{timeZone:'Asia/Shanghai',hour12:false}):'—';
+ $('#usageAt').textContent=t('usage_at')+' · Token '+stamp(d.tokens_at)+' · '+t('usage_left')+' '+stamp(d.quota_at);
+}).catch(()=>{$('#usageStatus').textContent=t('usage_wait')})}
+usageTick();setInterval(usageTick,15000);
 // ---- host memory trend: its own slow timer (30 s), the line is SVG ----
 function memTick(){fetch(API+'/host/mem').then(r=>r.json()).then(d=>{
  const pts=d.pts||[];
@@ -7639,7 +7680,7 @@ def state_snapshot():
                 "rtc": dict(board_rtc, boot_hello=board_rtc_boot),
                 "fw": {"build": board_build, "part": board_part},
                 "board": board_snapshot(),
-                "np": np_brief(),
+                "np": np_brief(), "usage": usage_snapshot(),
                 "probe": {"seen": dict(proc_seen), "cpu": dict(proc_cpu),
                           "busy": dict(cpu_busy)}}
 
@@ -7802,21 +7843,7 @@ class HookHandler(BaseHTTPRequestHandler):
                 self._ok(json.dumps(np_snapshot(), ensure_ascii=False).encode())
         elif self.path.startswith("/audio/"):
             # 听什么: RSS / audio link / local file -> the card
-            #   /audio/add?url=<feed or audio>[&n=1] | /audio/add?file=/abs/path
-            #   /audio/status  /audio/list  /audio/rm?id=<name>
-            q = dict(parse_qsl(self.path.split("?", 1)[1], keep_blank_values=True)) if "?" in self.path else {}
-            what = self.path.split("?", 1)[0][len("/audio/"):]
-            if what == "add":
-                r = au_add(q.get("url", ""), q.get("file", ""), q.get("n", 1))
-            elif what == "status":
-                r = au_status()
-            elif what == "list":
-                r = {"ok": True, "items": au_list(), "dir": str(AUDIO_DIR)}
-            elif what == "rm":
-                r = au_rm(q.get("id", ""))
-            else:
-                r = {"ok": False, "why": "unknown /audio/%s" % what}
-            self._ok(json.dumps(r, ensure_ascii=False).encode())
+            self._ok(json.dumps({"ok": False, "why": "Podcasts disabled in Codex-only firmware"}).encode())
         elif self.path.startswith("/test/media/"):
             # /test/media/<toggle|next|prev> — drive the Mac's own player
             self._ok(json.dumps(media_cmd(self.path.rsplit("/", 1)[1]), ensure_ascii=False).encode())
@@ -7824,7 +7851,7 @@ class HookHandler(BaseHTTPRequestHandler):
             # /test/view/<play|clock|report|face|almanac|calendar>[?s=20] — force a page for s seconds
             q = dict(parse_qsl(self.path.split("?", 1)[1], keep_blank_values=True)) if "?" in self.path else {}
             p = self.path.split("?", 1)[0].rsplit("/", 1)[1]
-            if p not in ("np", "pod", "play", "clock", "face", "almanac", "calendar"):   # play = np alias; report retired 2026-09-09
+            if p not in ("np", "usage", "play", "clock", "face", "calendar"):
                 self._ok(json.dumps({"ok": False, "why": "unknown page %r" % p}).encode())
                 return
             secs = int(np_num(q.get("s", 20), 20))
@@ -7847,6 +7874,22 @@ class HookHandler(BaseHTTPRequestHandler):
             self._ok()
         elif self.path == "/state":
             self._ok(json.dumps(state_snapshot()).encode())
+        elif self.path.startswith("/usage/font/"):
+            weight = self.path.rsplit("/", 1)[-1]
+            if weight not in ("Bold", "SemiBold"):
+                self.send_error(404)
+                return
+            path = Path(__file__).resolve().parent / ("IBMPlexSans-" + weight + ".ttf")
+            if not path.is_file():
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "font/ttf")
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(path.read_bytes())
+        elif self.path == "/usage":
+            self._ok(json.dumps(usage_snapshot()).encode())
         elif self.path.startswith("/host/mem"):
             # the settings page's memory trend line
             self._ok(json.dumps(mem_hist_body()).encode())
@@ -8358,6 +8401,7 @@ def main():
     sess_load()                       # Claude sessions survive a host restart
     np_apply()                        # media-control listener
     threading.Thread(target=watcher_loop, daemon=True).start()
+    threading.Thread(target=usage_loop, daemon=True).start()
     threading.Thread(target=ble_thread, daemon=True).start()
     threading.Thread(target=power_thread, daemon=True).start()   # links down before a Mac sleep
     threading.Thread(target=mem_loop, daemon=True).start()

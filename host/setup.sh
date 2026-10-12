@@ -119,10 +119,17 @@ fi
 # ---------------------------------------------------------------------------
 step "3. host 文件 → $DEPLOY"
 [ $CHECK = 1 ] || mkdir -p "$DEPLOY"
-for f in agentpet_host.py almanac_bank.json agent_setup.md gen_almanac_font.py pet codex_notify.sh codex_permission_hook.sh; do
+for f in agentpet_host.py codex_usage.py almanac_bank.json agent_setup.md gen_almanac_font.py pet codex_notify.sh codex_permission_hook.sh; do
   if cmp -s "$SRC/$f" "$DEPLOY/$f"; then ok "$f 一致"
   elif doit "拷 $f"; then
     cp "$SRC/$f" "$DEPLOY/$f.tmp" && mv -f "$DEPLOY/$f.tmp" "$DEPLOY/$f" && did "$f"
+    CHANGED_HOST=1
+  fi
+done
+for f in IBMPlexSans-Bold.ttf IBMPlexSans-SemiBold.ttf LICENSE-OFL.txt; do
+  if cmp -s "$SRC/../firmware/fonts/$f" "$DEPLOY/$f"; then ok "$f 一致"
+  elif doit "拷 $f"; then
+    cp "$SRC/../firmware/fonts/$f" "$DEPLOY/$f"
     CHANGED_HOST=1
   fi
 done

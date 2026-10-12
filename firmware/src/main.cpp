@@ -221,12 +221,8 @@ static bool wearSkinFor(int seat, uint8_t want) {
   return true;
 }
 static bool wearSkin(uint8_t want) { return wearSkinFor(selected, want); }
-static bool almanacView = true;   // almanac is this orientation's HOME page
-                                  // (user promotion 2026-08-29); left-swipe
-                                  // shows the calendar, right-swipe returns
-// Clock orientation is a three-page strip with the clock in the middle:
-// 播客 ←右滑← 钟表 →左滑→ 当前播放, no wrap-around.
-enum ClockView : uint8_t { CV_POD = 0, CV_CLOCK, CV_NP };   // 播客 ←右滑← 钟表 →左滑→ 当前播放
+// Codex usage <- swipe right <- clock -> swipe left -> Mac now playing.
+enum ClockView : uint8_t { CV_USAGE = 0, CV_CLOCK, CV_NP };
 static uint8_t clockView = CV_CLOCK;
 // Which source the play page is showing, and the double-tap override that
 // beats the automatic answer until that answer itself changes.
@@ -235,7 +231,6 @@ static uint8_t clockView = CV_CLOCK;
 static uint8_t  viewPg = PAGE_FACE, viewSub = 0;
 static uint32_t viewUntil = 0;
 static uint8_t  viewSavedCv = CV_CLOCK;   // flip-side views to put back afterwards
-static bool     viewSavedAlm = true;
 
 // Voice remote: after hold-to-talk ends a "↵ 发送" bubble arms for 6 s —
 // tap = host presses Return. (Shake-to-undo existed briefly and was retired
@@ -636,10 +631,9 @@ static void autoReselectIfOff() {
 }
 
 // ---- 播放页 ×2: the clock orientation's flip sides -------
-// 当前播放 (left swipe) acts on the Mac through the host, 播客 (right swipe)
-// on the board's own player. Nothing is inferred: the page IS the source.
+// Only the Mac now-playing page has playback controls.
 static uint8_t pageSrc() {
-  return clockView == CV_NP ? PSRC_MAC : clockView == CV_POD ? PSRC_SD : PSRC_NONE;
+  return clockView == CV_NP ? PSRC_MAC : PSRC_NONE;
 }
 // zone -1 = left (prev / -15 s), 0 = middle or the card (play-pause), +1 = right
 static void playAct(uint8_t src, int zone) {
@@ -1684,7 +1678,7 @@ static void handleLine(const String& line) {
     r["pos"] = pos; r["dur"] = dur; r["play"] = playing ? 1 : 0;
     r["n"] = playerCount(); r["i"] = playerInfo().index;
     r["src"] = src == PSRC_MAC ? "mac" : "sd";
-    r["page"] = clockView == CV_NP ? "np" : clockView == CV_POD ? "pod" : "clock";
+    r["page"] = clockView == CV_NP ? "np" : clockView == CV_USAGE ? "usage" : "clock";
     sendJson(r);
   } else if (strcmp(t, "view") == 0) {      // host debug (/test/view/<p>): force a page for s seconds
     const char* pv = d["p"] | "";
@@ -1693,13 +1687,12 @@ static void handleLine(const String& line) {
     if      (!strcmp(pv, "face"))     { pg = PAGE_FACE; }
     else if (!strcmp(pv, "clock"))    { pg = PAGE_CLOCK;    sub = CV_CLOCK; }
     else if (!strcmp(pv, "np") || !strcmp(pv, "play")) { pg = PAGE_CLOCK; sub = CV_NP; }
-    else if (!strcmp(pv, "pod"))      { pg = PAGE_CLOCK;    sub = CV_POD; }
-    else if (!strcmp(pv, "almanac"))  { pg = PAGE_CALENDAR; sub = 1; }
+    else if (!strcmp(pv, "usage"))    { pg = PAGE_CLOCK;    sub = CV_USAGE; }
     else if (!strcmp(pv, "calendar")) { pg = PAGE_CALENDAR; sub = 0; }
     bool ok = pg != 255;
     if (ok && sec > 0) {
       if ((int32_t)(viewUntil - millis()) <= 0) {   // first lock: remember where the user was
-        viewSavedCv = clockView; viewSavedAlm = almanacView;
+        viewSavedCv = clockView;
       }
       viewPg = pg; viewSub = sub;
       viewUntil = millis() + (uint32_t)sec * 1000;
@@ -1750,6 +1743,8 @@ static void handleLine(const String& line) {
     if (!changed) sendSkins();               // the page still wants the truth back
     if (seat == selected) profUntil = millis() + 6000;   // show the card so the name is visible
     noteActivity();
+  } else if (strcmp(t, "usage") == 0) {
+    usageSet(d);
   } else if (strcmp(t, "almanac") == 0) {   // daily cyber-almanac from host
     const char* ch = d["ch"] | "#3EE6D2";
     uint32_t v = strtoul(ch[0] == '#' ? ch + 1 : ch, nullptr, 16);
@@ -2047,7 +2042,6 @@ static void handleLine(const String& line) {
       if (want != 255 && want != g_lang) {
         g_lang = want;
         growPrefs.putUChar("lang", want);
-        almanacView = !langEn();           // re-land the almanac orientation
         noteActivity();
         Serial.printf("cfg: lang -> %s\n", lg);
       }
@@ -2874,21 +2868,7 @@ static void touchPoll() {
         }
         if (!half) lastTapAt = nowMs;
       }
-    } else if (shownPage == PAGE_CALENDAR && almanacView && vv) {
-      // 换一签 (2026-09-22, user): up = next reading, down
-      // = previous, five readings wrap. The odd-rotation sign flip below is
-      // the play page's, and this strip is the other odd rotation (sector 1),
-      // so it carries over unchanged. Coming back round to the own draw shows
-      // a pill toast.
-      int up = (((4 - shownRot) & 3) & 1) ? (vdy > 0) : (vdy < 0);
-      if (almanacAltCount() > 0) {
-        int pick = almanacPickStep(up ? +1 : -1);
-        audioPlay(pick == 0 ? SND_SELECT : SND_TICK);
-        if (pick == 0) showToast("命运自有回应");
-      } else {
-        audioPlay(SND_TICK);                         // nothing to cycle yet (old host / old card file)
-      }
-    } else if (shownPage == PAGE_CLOCK && clockView != CV_CLOCK && vv) {
+    } else if (shownPage == PAGE_CLOCK && clockView == CV_NP && vv) {
       // 播放页 up/down = volume ±10, like the face page; the toast is the
       // bar along the bottom band. Immediate: the petting deferral is a
       // face-page problem only. Sign: the shared table's vdy row for canvas
@@ -2902,7 +2882,7 @@ static void touchPoll() {
       audioSetVolume(audioVolume() + (up ? 10 : -10));
       volShowUntil = millis() + 1500;
       audioPlay(SND_TICK);
-    } else if (shownPage == PAGE_CLOCK && clockView != CV_CLOCK &&
+    } else if (shownPage == PAGE_CLOCK && clockView == CV_NP &&
                !vh && !hswipe && !vswipe) {
       // compact card: the transport band is three 160×160
       // zones — prev|toggle|next on 当前播放, -15 s|toggle|+15 s on 播客 —
@@ -2917,40 +2897,14 @@ static void touchPoll() {
         playAct(pageSrc(), playZoneAt(px, py));
         audioPlay(SND_TICK);
       }
-    } else if ((shownPage == PAGE_CALENDAR ||
-                shownPage == PAGE_CLOCK) &&
-               !hswipe && !vswipe) {
-      // 求签: tapping the almanac asks the pet to read
-      // today's fortune aloud — invited speech only, never unprompted.
-      if (shownPage == PAGE_CALENDAR && almanacView &&
-          (hostUp || bleConnected())) {
-        JsonDocument q;                    // the host reads the reading on screen
-        q["t"] = "qian"; q["pick"] = almanacPick();
-        sendJson(q);
-      }
-    } else if (shownPage == PAGE_CALENDAR ||
-               shownPage == PAGE_CLOCK) {
-      // two-sided orientations, in the shared viewed frame (vdx above): a
-      // viewed right-swipe opens the almanac / battle report, left-swipe
-      // returns to the calendar / clock. (shownRot == orient on the desk;
-      // in hand it is the live gravity sector, so held swipes match too.)
-      if (shownPage == PAGE_CALENDAR) {
-        // two pages wrap (2026-09-22, user): either direction flips between
-        // 黄历 and 日历, so no swipe on this strip is ever a dead one
-        if (abs(vdx) > SWIPE_MIN_PX) {
-          almanacView = !almanacView;
-          audioPlay(almanacView != langEn() ? SND_TICK : SND_SELECT);   // home = tick, away = select
-        }
-      } else {
-        // 三联页 (user 2026-09-09): 播客 ←右滑← 钟表 →左滑→ 当前播放,
-        // no wrap — the two players never reach each other directly.
-        if (vdx > SWIPE_MIN_PX) {
-          if (clockView == CV_CLOCK)   { clockView = CV_POD;   audioPlay(SND_SELECT); }
-          else if (clockView == CV_NP) { clockView = CV_CLOCK; audioPlay(SND_TICK); }
-        } else if (vdx < -SWIPE_MIN_PX) {
-          if (clockView == CV_POD)        { clockView = CV_CLOCK; audioPlay(SND_TICK); }
-          else if (clockView == CV_CLOCK) { clockView = CV_NP;    audioPlay(SND_SELECT); }
-        }
+    } else if (shownPage == PAGE_CLOCK) {
+      // Usage -> clock -> Mac now playing; no wrap-around.
+      if (vdx > SWIPE_MIN_PX) {
+        if (clockView == CV_CLOCK)   { clockView = CV_USAGE; audioPlay(SND_SELECT); }
+        else if (clockView == CV_NP) { clockView = CV_CLOCK; audioPlay(SND_TICK); }
+      } else if (vdx < -SWIPE_MIN_PX) {
+        if (clockView == CV_USAGE)     { clockView = CV_CLOCK; audioPlay(SND_TICK); }
+        else if (clockView == CV_CLOCK) { clockView = CV_NP; audioPlay(SND_SELECT); }
       }
     }
   }
@@ -3054,7 +3008,6 @@ void setup() {
   // microSD (optional): mount + FAT self-test, facts land on the settings card;
   // then the card fonts (any glyph missing in flash comes from there)
   if (sdInit()) { sdFontLoadAll(); almanacFromCard(clockEpoch()); }
-  playerInit();     // scan /agentpet/audio/ + restore the resume point
 
   // Growth stats + skin, loaded before the boot animation so the eyes
   // already wear the chosen skin while they open
@@ -3077,7 +3030,6 @@ void setup() {
   voiceTts   = growPrefs.getUChar("vtts", 0) != 0;
   showOffSeats = growPrefs.getUChar("showoff", 0) != 0;   // 离线席位默认隐藏
   g_lang = growPrefs.getUChar("lang", LANG_ZH) == LANG_EN ? LANG_EN : LANG_ZH;
-  almanacView = !langEn();   // English lands on the calendar side
   for (int i = 0; i < N_AGENTS; i++) {
     char key[8];
     snprintf(key, sizeof(key), "skin%d", i);
@@ -3140,7 +3092,6 @@ void loop() {
     sdFontLoadAll();
     sessRelabel();                     // card titles vs folder names
     almanacFromCard(clockEpoch());
-    playerInit();
     wdtFeed();                         // four index/scan passes over a cold
                                        // card in one loop pass (~1-3 s)
     JsonDocument d;
@@ -3528,12 +3479,8 @@ void loop() {
            : effBind == BIND_ALMANAC ? PAGE_CALENDAR
                                      : PAGE_CLOCK;
     } else {
-      if (pg != PAGE_CALENDAR) almanacView = !langEn();  // re-enter on the almanac (English: calendar)
-      // Re-enter the clock orientation in the middle of its three-page strip
-      // — unless the board itself is playing, in which case you turned it
-      // over to control what you are hearing (playerPlaying()
-      // is the wave-1 stub and always says no).
-      if (pg != PAGE_CLOCK) clockView = playerPlaying() ? CV_POD : CV_CLOCK;
+      // Re-enter the clock orientation in the middle of its three-page strip.
+      if (pg != PAGE_CLOCK) clockView = CV_CLOCK;
     }
     // needs_you is the only state allowed to grab the screen (doc/06): the
     // selected seat raising its hand pulls the pet page in — desk or hand,
@@ -3562,7 +3509,7 @@ void loop() {
     bool viewLock = (int32_t)(viewUntil - now) > 0;
     static bool viewWasLocked = false;
     if (viewWasLocked && !viewLock) {      // lock over: hand the pages back
-      clockView = viewSavedCv; almanacView = viewSavedAlm;
+      clockView = viewSavedCv;
     }
     viewWasLocked = viewLock;
     if (viewLock && !demoStart) {
@@ -3580,23 +3527,20 @@ void loop() {
     if (pg != PAGE_FACE) {
       canvas->setRotation((4 - rotSec) & 3);
       uint8_t cv = viewLock ? viewSub : bound ? CV_CLOCK : clockView;
-      bool wantAlm = viewLock ? viewSub != 0 : (bound ? true : almanacView);
       if (pg == PAGE_CLOCK) {
-        // clock is home for this orientation; 播客 (right) and 当前播放 (left)
-        // are its two flip sides, one renderer with the page's own source
-        if (cv != CV_CLOCK) {
+        // Clock is home, with usage and Mac now-playing on either side.
+        if (cv == CV_USAGE) {
+          drawUsagePage(canvas, now, PAGE_ACCENT);
+        } else if (cv == CV_NP) {
           int32_t vleft = (int32_t)(volShowUntil - now);
           float volK = vleft <= 0 ? 0.0f : (vleft < 300 ? vleft / 300.0f : 1.0f);
-          drawPlayPage(canvas, now, PAGE_ACCENT, cv == CV_NP ? PSRC_MAC : PSRC_SD,
+          drawPlayPage(canvas, now, PAGE_ACCENT, PSRC_MAC,
                        audioVolume(), volK);
         } else {
           drawClockPage(canvas, now, PAGE_ACCENT);
         }
       } else {
-        // almanac is home for this orientation; calendar is the flip side
-        // (and the fallback until the host has pushed today's data)
-        if (wantAlm && almanacValid()) drawAlmanacPage(canvas, now);
-        else                           drawCalendarPage(canvas, now, PAGE_ACCENT);
+        drawCalendarPage(canvas, now, PAGE_ACCENT);
       }
       // the same corner pin the face wears: seat color for 10 s, then grey
       if (pinned) drawPagePin(canvas, (int32_t)(pinLitUntil - now) > 0, AGENTS[selected].color);
@@ -3604,7 +3548,7 @@ void loop() {
       drawPageBatt(canvas, battFakeOn() ? battFakePct
                            : (pmuOk && pmu.isBatteryConnect()) ? pmu.getBatteryPercent()
                            : -1, now);
-      int toastCy = pg == PAGE_CALENDAR ? (wantAlm && almanacValid() ? 286 : 368)
+      int toastCy = pg == PAGE_CALENDAR ? 368
                   : (cv == CV_CLOCK ? (langEn() ? 296 : 300) : 368);   // en panel top is 320
       drawPillToast(canvas, pinLabel, pinK, toastCy);
       canvas->setRotation(0);

@@ -58,9 +58,6 @@ static void miniEyes(Arduino_Canvas* c, uint32_t t, int cy) {
 
 static const char* MO3[12]  = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
                                "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
-static const char* MOF[12]  = {"JANUARY", "FEBRUARY", "MARCH", "APRIL",
-                               "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER",
-                               "OCTOBER", "NOVEMBER", "DECEMBER"};
 static const char* WD3[7]   = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
 
 // Print s with extra tracking between glyphs (letterspacing the u8g2 fonts
@@ -105,16 +102,10 @@ void drawCalendarPage(Arduino_Canvas* c, uint32_t t, uint16_t accent) {
   struct tm tmv;
   localTm(tmv);
 
-  // Direction B: centered tracked header "MONTH ▪ YEAR"
   c->setFont(u8g2_font_fur25_tr);
-  char ys[6];
-  snprintf(ys, sizeof(ys), "%d", 1900 + tmv.tm_year);
-  int wm = trackWidth(c, MOF[tmv.tm_mon], 8);
-  int wy = trackWidth(c, ys, 8);
-  int hx = (480 - (wm + 36 + wy)) / 2;
-  trackPrint(c, hx, 66, MOF[tmv.tm_mon], 8, GREYTXT);
-  c->fillRect(hx + wm + 14, 50, 8, 8, accent);
-  trackPrint(c, hx + wm + 36, 66, ys, 8, GREYDIM);
+  char ds[16];
+  snprintf(ds, sizeof(ds), "%04d%02d%02d", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday);
+  trackPrint(c, (480 - trackWidth(c, ds, 3)) / 2, 66, ds, 3, GREYTXT);
 
   // Monday-first weekday row, columns centered
   c->setFont(u8g2_font_fur17_tr);
@@ -419,15 +410,8 @@ static const AFont AF_MSEC = {AFN_CP, AFN_OFF, AFN_DATA, AFN_COUNT, AFN_ASCENT, 
 static const AFont AF_MDAT = {AFO_CP, AFO_OFF, AFO_DATA, AFO_COUNT, AFO_ASCENT, -1};
 
 static const uint16_t CK_TRACK  = C565(0x14, 0x17, 0x1C);   // ring groove
-static const uint16_t CK_INK    = C565(0x12, 0x16, 0x1F);   // panel fill
-static const uint16_t CK_DIMBAR = C565(0x1E, 0x4E, 0x48);   // unlit signal bar
 
 static const char* const CK_WEEKDAY[7] = {"日", "一", "二", "三", "四", "五", "六"};
-static const char* const CK_SHICHEN[12] = {   // double-hour names, 子 first
-    "子时 · 夜半", "丑时 · 鸡鸣", "寅时 · 平旦", "卯时 · 日出",
-    "辰时 · 食时", "巳时 · 隅中", "午时 · 日中", "未时 · 日昳",
-    "申时 · 晡时", "酉时 · 日入", "戌时 · 黄昏", "亥时 · 人定"};
-
 // afPrint with per-glyph tracking (the 96 px Menlo digits sit too loose at
 // their natural advance; the mock uses about -6 px).
 static int afPrintTrack(Arduino_Canvas* c, const AFont& f, int x, int base,
@@ -486,20 +470,9 @@ void drawClockPage(Arduino_Canvas* c, uint32_t t, uint16_t accent) {
   c->fillCircle(240 + (int)(216 * cosf(sa)), 240 + (int)(216 * sinf(sa)), 7,
                 WHITE);
 
-  // gold header: sexagenary day (from the almanac push) + weekday + date
-  char head[48];
-  if (langEn())                        // English: full weekday, no 干支
-    snprintf(head, sizeof(head), "%s", EN_WEEKDAY[tmv.tm_wday]);
-  else if (almanacValid())
-    snprintf(head, sizeof(head), "%s · 星期%s", alGz, CK_WEEKDAY[tmv.tm_wday]);
-  else
-    snprintf(head, sizeof(head), "星期%s", CK_WEEKDAY[tmv.tm_wday]);
-  char ds[8];
-  snprintf(ds, sizeof(ds), "%02d.%02d", tmv.tm_mon + 1, tmv.tm_mday);
-  int hw = afWidth(AF_HEAD, head), dw = afWidthTrack(AF_MDAT, ds, 0);
-  int hx = 240 - (hw + 12 + dw) / 2;
-  afPrint(c, AF_HEAD, hx, 100, head, AL_GOLD);
-  afPrintTrack(c, AF_MDAT, hx + hw + 12, 100, ds, AL_DIM, 0);
+  char ds[16];
+  snprintf(ds, sizeof(ds), "%04d%02d%02d", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday);
+  afPrintTrack(c, AF_MDAT, (480 - afWidthTrack(AF_MDAT, ds, 2)) / 2, 100, ds, AL_DIM, 2);
   c->fillRect(240 - 32, 112, 64, 2, AL_GOLD);
 
   // big Menlo time + cyan seconds on the shared baseline
@@ -512,44 +485,93 @@ void drawClockPage(Arduino_Canvas* c, uint32_t t, uint16_t accent) {
   afPrintTrack(c, AF_MBIG, tx, 262, ts, AL_WHITE, -6);
   afPrintTrack(c, AF_MSEC, tx + tw + 12, 262, ss, AL_CYAN, 0);
 
-  // 时辰 ink panel with the deco signal bars (23-1 点 = 子时, two hours per)
-  int shi = ((tmv.tm_hour + 1) / 2) % 12;
-  if (langEn()) {
-    // English two-line panel: gold Songti classical name over
-    // a dim 18 px "HOUR OF THE …". The bars ride the upper row, right-aligned,
-    // so the long second line runs underneath them: bars beside BOTH lines
-    // made the widest panel 353 px, which pokes through the ring (inner edge
-    // r = 214) at y 320..396; this way the widest is 288 px (ROOSTER) and
-    // its rounded corners stay at r <= 207.
-    const char* nm = EN_SHICHEN[shi];
-    const char* an = EN_SHICHEN_ANIMAL[shi];
-    int nw = afWidth(AF_HEAD, nm), aw = afWidth(AF_TINY, an);
-    int inner = nw + 26 + 39 > aw ? nw + 26 + 39 : aw;
-    int panelW = 24 + inner + 24, panelH = 76;
-    int px = 240 - panelW / 2, py = 320;
-    c->fillRoundRect(px, py, panelW, panelH, 14, CK_INK);
-    c->drawRoundRect(px, py, panelW, panelH, 14, AL_INKBRD);
-    afPrint(c, AF_HEAD, px + 24, py + 36, nm, AL_GOLD, CK_INK);
-    afPrint(c, AF_TINY, px + 24, py + 62, an, AL_DIM, CK_INK);
-    int bx = px + panelW - 24 - 39, bb = py + 36;
-    for (int i = 0; i < 4; i++) {
-      int h = 8 + 6 * i;
-      c->fillRect(bx + i * 11, bb - h, 6, h, i < 3 ? AL_CYAN : CK_DIMBAR);
-    }
-    return;
+  char weekday[32];
+  if (langEn()) snprintf(weekday, sizeof(weekday), "%s", EN_WEEKDAY[tmv.tm_wday]);
+  else snprintf(weekday, sizeof(weekday), "星期%s", CK_WEEKDAY[tmv.tm_wday]);
+  afPrint(c, AF_HEAD, (480 - afWidth(AF_HEAD, weekday)) / 2, 356, weekday, AL_DIM);
+}
+
+// ---------------------------------------------------------------- Codex usage
+#include "usage_font.h"
+static const AFont UF_HERO = {AFU_CP, AFU_OFF, AFU_DATA, AFU_COUNT, AFU_ASCENT, -1};
+static const AFont UF_STAT = {AFV_CP, AFV_OFF, AFV_DATA, AFV_COUNT, AFV_ASCENT, -1};
+static const AFont UF_TEXT = {AFW_CP, AFW_OFF, AFW_DATA, AFW_COUNT, AFW_ASCENT, -1};
+static const AFont UF_SMALL = {AFX_CP, AFX_OFF, AFX_DATA, AFX_COUNT, AFX_ASCENT, -1};
+static const uint16_t US_PURPLE = C565(0x6F, 0x78, 0xFF);
+static const uint16_t US_MUTED = C565(0x92, 0x98, 0xA2);
+static const uint16_t US_TRACK = C565(0x30, 0x32, 0x38);
+static int64_t usageToday = -1, usageWeek = -1;
+static char usageDate[16] = "", usageStatus[16] = "UNAVAILABLE";
+static uint32_t usageAt = 0;
+static bool usageTokensStale = true;
+struct UsageWindow { char label[12], reset[24]; float left; };
+static UsageWindow usageWindows[2];
+static uint8_t usageN = 0;
+
+void usageSet(JsonDocument& d) {
+  usageTokensStale = d["tokens_stale"] | true;
+  usageToday = d["today"].isNull() ? -1 : d["today"].as<int64_t>();
+  usageWeek = d["week"].isNull() ? -1 : d["week"].as<int64_t>();
+  strlcpy(usageDate, d["date"] | "", sizeof(usageDate));
+  strlcpy(usageStatus, d["status"] | "UNAVAILABLE", sizeof(usageStatus));
+  usageN = 0;
+  for (JsonObject w : d["windows"].as<JsonArray>()) {
+    if (usageN == 2) break;
+    UsageWindow& dst = usageWindows[usageN++];
+    strlcpy(dst.label, w["label"] | "?", sizeof(dst.label));
+    strlcpy(dst.reset, w["reset"] | "--", sizeof(dst.reset));
+    dst.left = constrain(w["left"] | 0.0f, 0.0f, 100.0f);
   }
-  const char* sc = CK_SHICHEN[shi];
-  int scw = afWidth(AF_HEAD, sc);
-  int panelW = 24 + scw + 26 + 39 + 24, panelH = 56;
-  int px = 240 - panelW / 2, py = 330;
-  c->fillRoundRect(px, py, panelW, panelH, 14, CK_INK);
-  c->drawRoundRect(px, py, panelW, panelH, 14, AL_INKBRD);
-  afPrint(c, AF_HEAD, px + 24, py + 38, sc, AL_GOLD, CK_INK);
-  int bx = px + 24 + scw + 26, bb = py + panelH - 15;
-  for (int i = 0; i < 4; i++) {
-    int h = 8 + 6 * i;
-    c->fillRect(bx + i * 11, bb - h, 6, h, i < 3 ? AL_CYAN : CK_DIMBAR);
+  usageAt = millis();
+}
+
+static void tokenText(char* out, size_t n, int64_t value) {
+  if (value < 0) strlcpy(out, "--", n);
+  else if (value >= 1000000000LL) snprintf(out, n, "%.2fB", value / 1e9);
+  else if (value >= 1000000) snprintf(out, n, "%.2fM", value / 1e6);
+  else if (value >= 1000) snprintf(out, n, "%.1fK", value / 1e3);
+  else snprintf(out, n, "%lld", (long long)value);
+}
+
+void drawUsagePage(Arduino_Canvas* c, uint32_t t, uint16_t accent) {
+  (void)accent;
+  c->fillScreen(BG);
+  c->fillCircle(28, 36, 6, US_PURPLE);
+  afPrintTrack(c, UF_TEXT, 43, 44, "CODEX", WHITE, 2);
+  afPrint(c, UF_SMALL, 458 - afWidth(UF_SMALL, usageDate), 41, usageDate, US_MUTED);
+  c->fillRect(22, 63, 436, 1, C565(0x20, 0x23, 0x28));
+  char text[64];
+  if (usageN && !strcmp(usageWindows[0].label, "7d")) strlcpy(text, "WEEKLY USED", sizeof(text));
+  else if (usageN) snprintf(text, sizeof(text), "%s USED", usageWindows[0].label);
+  else strlcpy(text, "QUOTA USED", sizeof(text));
+  afPrintTrack(c, UF_TEXT, 22, 95, text, US_MUTED, 1);
+  if (usageN) snprintf(text, sizeof(text), "%.0f%% LEFT", usageWindows[0].left);
+  else strlcpy(text, "UNAVAILABLE", sizeof(text));
+  afPrint(c, UF_SMALL, 458 - afWidth(UF_SMALL, text), 92, text, US_PURPLE);
+  if (usageN) snprintf(text, sizeof(text), "%.0f%%", 100 - usageWindows[0].left);
+  else strlcpy(text, "--", sizeof(text));
+  afPrintTrack(c, UF_HERO, 16, 270, text, WHITE, -9);
+  c->fillRoundRect(22, 304, 436, 20, 10, US_TRACK);
+  int width = usageN ? (int)(436 * (100 - usageWindows[0].left) / 100) : 0;
+  if (width) c->fillRoundRect(22, 304, width, 20, min(10, width / 2), US_PURPLE);
+  if (usageN) snprintf(text, sizeof(text), "RESET %s UTC+8", usageWindows[0].reset);
+  else strlcpy(text, "WAITING FOR ACCOUNT", sizeof(text));
+  afPrint(c, UF_SMALL, 22, 350, text, US_MUTED);
+  for (int i = 0; i < 2; i++) {
+    int x = 22 + i * 240;
+    tokenText(text, sizeof(text), i ? usageWeek : usageToday);
+    afPrint(c, UF_STAT, x, 402, text, US_PURPLE);
+    afPrintTrack(c, UF_SMALL, x, 426, i ? "THIS WEEK TOKENS" : "TODAY TOKENS", US_MUTED, 1);
   }
+  bool stale = !usageAt || (int32_t)(t - usageAt) > 90000;
+  const char* status = stale ? "HOST OFFLINE / STALE" : usageStatus;
+  afPrint(c, UF_SMALL, 22, 459, status, US_MUTED);
+  if (usageN > 1) {
+    snprintf(text, sizeof(text), "%s %.0f%% LEFT", usageWindows[1].label, usageWindows[1].left);
+  } else {
+    strlcpy(text, usageTokensStale ? "TOKENS STALE" : usageToday < 0 ? "TOKENS PENDING" : "ACCOUNT TOKENS", sizeof(text));
+  }
+  afPrint(c, UF_SMALL, 458 - afWidth(UF_SMALL, text), 459, text, US_MUTED);
 }
 
 // ---------------------------------------------------------------- play page

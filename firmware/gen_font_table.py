@@ -25,3 +25,9 @@ if not os.path.exists(out):
               "***   host/setup.sh   (asks, then installs it; --pillow = yes without asking)\n"
               "***   or: /usr/bin/python3 -m pip install --user pillow==11.3.0\n")
         env.Exit(1)  # noqa: F821
+
+usage_out = os.path.join(proj, "src", "usage_font.h")
+usage_gen = os.path.normpath(os.path.join(proj, "..", "host", "gen_usage_font.py"))
+if not os.path.exists(usage_out) or os.path.getmtime(usage_gen) > os.path.getmtime(usage_out):
+    if subprocess.run(["/usr/bin/python3", usage_gen]).returncode:
+        env.Exit(1)  # noqa: F821
