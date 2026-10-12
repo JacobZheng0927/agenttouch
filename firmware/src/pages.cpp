@@ -504,12 +504,14 @@ static int64_t usageToday = -1, usageWeek = -1;
 static char usageDate[16] = "", usageStatus[16] = "UNAVAILABLE";
 static uint32_t usageAt = 0;
 static bool usageTokensStale = true;
+static bool usageTodayStale = true;
 struct UsageWindow { char label[12], reset[24]; float left; };
 static UsageWindow usageWindows[2];
 static uint8_t usageN = 0;
 
 void usageSet(JsonDocument& d) {
   usageTokensStale = d["tokens_stale"] | true;
+  usageTodayStale = d["today_stale"] | true;
   usageToday = d["today"].isNull() ? -1 : d["today"].as<int64_t>();
   usageWeek = d["week"].isNull() ? -1 : d["week"].as<int64_t>();
   strlcpy(usageDate, d["date"] | "", sizeof(usageDate));
@@ -561,7 +563,7 @@ void drawUsagePage(Arduino_Canvas* c, uint32_t t, uint16_t accent) {
     int x = 22 + i * 240;
     tokenText(text, sizeof(text), i ? usageWeek : usageToday);
     afPrint(c, UF_STAT, x, 402, text, US_PURPLE);
-    afPrintTrack(c, UF_SMALL, x, 426, i ? "THIS WEEK TOKENS" : "TODAY TOKENS", US_MUTED, 1);
+    afPrintTrack(c, UF_SMALL, x, 426, i ? "WEEK / ACCOUNT" : "TODAY / THIS MAC", US_MUTED, 1);
   }
   bool stale = !usageAt || (int32_t)(t - usageAt) > 90000;
   const char* status = stale ? "HOST OFFLINE / STALE" : usageStatus;
@@ -569,7 +571,7 @@ void drawUsagePage(Arduino_Canvas* c, uint32_t t, uint16_t accent) {
   if (usageN > 1) {
     snprintf(text, sizeof(text), "%s %.0f%% LEFT", usageWindows[1].label, usageWindows[1].left);
   } else {
-    strlcpy(text, usageTokensStale ? "TOKENS STALE" : usageToday < 0 ? "TOKENS PENDING" : "ACCOUNT TOKENS", sizeof(text));
+    strlcpy(text, usageTodayStale ? "LOCAL STALE" : usageTokensStale ? "ACCOUNT STALE" : usageWeek < 0 ? "WEEK PENDING" : "LOCAL + ACCOUNT", sizeof(text));
   }
   afPrint(c, UF_SMALL, 458 - afWidth(UF_SMALL, text), 459, text, US_MUTED);
 }

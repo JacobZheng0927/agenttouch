@@ -52,7 +52,7 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote
-from codex_usage import read_account_usage, account_tokens, quota_windows, TZ
+from codex_usage import read_account_usage, account_tokens, quota_windows, LocalTodayTokens, TZ
 
 # ------------------------------------------------------------------ config
 TCP_PORT = 8737          # board connects here
@@ -64,7 +64,7 @@ LOG_PATH = Path("/tmp/agentpet_host.log")
 
 # Which board this host serves: the first log line, /state and `pet status` say it.
 PRODUCT = "s3"
-HOST_VERSION = "2026-10-12-codex-usage"
+HOST_VERSION = "2026-10-12-codex-local"
 
 # `forest` (Qoder Forest, the "Qoder CN.app" desktop client, split from the
 # IDE seat 2026-09-13) MUST stay last: report_msg() emits w[]/d[] in
@@ -2603,7 +2603,7 @@ def push_time():
     push_raw(time_msg())
 
 usage = {"t": "usage", "today": None, "week": None, "windows": [],
-         "tokens_at": 0, "quota_at": 0, "date": "", "week_start": ""}
+         "tokens_at": 0, "today_at": 0, "quota_at": 0, "date": "", "week_start": ""}
 usage_lock = threading.Lock()
 
 def usage_snapshot():
@@ -2612,30 +2612,38 @@ def usage_snapshot():
     snap["status"] = ("UNAVAILABLE" if not snap["quota_at"] else
                       "STALE" if time.time() - snap["quota_at"] > 600 else "LIVE")
     snap["tokens_stale"] = not snap["tokens_at"] or time.time() - snap["tokens_at"] > 600
+    snap["today_stale"] = not snap["today_at"] or time.time() - snap["today_at"] > 90
     return snap
 
 def usage_loop():
     next_fetch = 0
+    local = LocalTodayTokens(CODEX_SESSIONS)
     while True:
         now = datetime.datetime.now(TZ)
         if now.strftime("%Y%m%d") != usage["date"]:
             with usage_lock:
-                usage.update(today=None, week=None, tokens_at=0, date=now.strftime("%Y%m%d"),
+                usage.update(today=None, week=None, tokens_at=0, today_at=0, date=now.strftime("%Y%m%d"),
                              week_start=(now - datetime.timedelta(days=now.weekday())).strftime("%Y%m%d"))
             next_fetch = 0
         if time.monotonic() >= next_fetch:
             try:
                 limits, daily = read_account_usage()
                 windows = quota_windows(limits)
-                today, week = account_tokens(daily, now.date())
+                _, week = account_tokens(daily, now.date())
                 with usage_lock:
                     if limits is not None:
                         usage.update(windows=windows, quota_at=int(time.time()) if windows else 0)
                     if daily is not None:
-                        usage.update(today=today, week=week, tokens_at=int(time.time()))
+                        usage.update(week=week, tokens_at=int(time.time()))
             except (OSError, ValueError, RuntimeError, KeyError) as e:
                 log("account usage unavailable:", type(e).__name__)
             next_fetch = time.monotonic() + 300
+        try:
+            today = local.read(now.date())
+            with usage_lock:
+                usage.update(today=today, today_at=int(time.time()) if today is not None else 0)
+        except OSError as e:
+            log("local token usage unavailable:", type(e).__name__)
         push_msg(usage_snapshot())
         time.sleep(30)
 
@@ -6569,8 +6577,8 @@ SETTINGS_T = {
   "page_pickup": "拿起时显示", "pdesc_pickup": "把板子拿起来那一刻显示哪一页。",
   "page_behavior": "行为", "pdesc_behavior": "板子与 Mac 前台互相跟随的规则。",
   "page_np": "正在播放", "pdesc_np": "把 Mac 正在播的东西显示在板上。",
-  "page_usage": "Codex 用量", "pdesc_usage": "账户额度与官方今天／本周 Token 用量。",
-  "usage_today": "今天 Token", "usage_week": "本周 Token", "usage_note": "Token 来自官方账户每日分桶，沿用服务端日期，本周从周一开始；可能延迟。每 5 分钟刷新。重置时间为北京时间。",
+  "page_usage": "Codex 用量", "pdesc_usage": "账户额度、本机今日 Token 与账户本周 Token。",
+  "usage_today": "今日 · 本机 Token", "usage_week": "本周 · 账户 Token", "usage_note": "今日：本机 Codex 桌面端响应日志，按北京时间统计，含缓存输入，按响应 ID 去重，每 30 秒刷新；不含其他设备及未记录的调用。本周：官方账户每日分桶，沿用服务端日期，周一起，可能延迟，每 5 分钟刷新。两者口径不同。重置时间为北京时间。宠物页：按键朝上立放；侧放显示时钟／用量，working 不会自动切页。",
   "usage_wait": "暂不可用", "usage_left": "剩余", "usage_reset": "重置", "usage_stale": "额度数据已过期", "usage_live": "额度已同步",
   "usage_at": "更新时间", "usage_pending": "待同步", "usage_used": "已用",
   "page_host": "host", "pdesc_host": "常驻服务本身：重启、日志、调试按钮。",
@@ -6692,8 +6700,8 @@ SETTINGS_T = {
   "page_pickup": "Pickup", "pdesc_pickup": "Which page the board shows the moment you pick it up.",
   "page_behavior": "Behavior", "pdesc_behavior": "How the board and the Mac's front app follow each other.",
   "page_np": "Now Playing", "pdesc_np": "Show what the Mac is playing on the board.",
-  "page_usage": "Codex usage", "pdesc_usage": "Account quota and official today / this week tokens.",
-  "usage_today": "Today tokens", "usage_week": "This week tokens", "usage_note": "Official account daily buckets, using service dates; week starts Monday. Publication may lag. Refreshes every 5 minutes; reset time is UTC+8.",
+  "page_usage": "Codex usage", "pdesc_usage": "Account quota, local today and account weekly tokens.",
+  "usage_today": "Today · this Mac", "usage_week": "Week · account", "usage_note": "Today: local Codex desktop response logs in UTC+8, cached input included, deduplicated by response ID; every 30 seconds. Other devices and unrecorded calls are excluded. Week: official account buckets using service dates, Monday start; may lag, every 5 minutes. These scopes differ. Reset: UTC+8. Pet: stand the board keys-up; working does not override side pages.",
   "usage_wait": "Unavailable", "usage_left": "remaining", "usage_reset": "reset", "usage_stale": "Quota data is stale", "usage_live": "Quota synced",
   "usage_at": "Updated", "usage_pending": "Pending", "usage_used": "USED",
   "page_host": "Host", "pdesc_host": "The background service itself: restart, log, and debug buttons.",
@@ -7441,9 +7449,9 @@ function usageTick(){fetch(API+'/usage').then(r=>r.json()).then(d=>{
  $('#usageBar').style.width=(used||0)+'%';
  $('#usageReset').textContent=t('usage_reset')+' '+(w?w.reset+' UTC+8':'—');
  $('#usageQuota').textContent=d.windows.slice(1).map(w=>w.label+' '+fmt(w.left)+'% '+t('usage_left')+' · '+t('usage_reset')+' '+w.reset+' UTC+8').join(' / ');
- $('#usageStatus').textContent=t(d.status==='LIVE'?'usage_live':d.status==='STALE'?'usage_stale':'usage_wait')+(d.tokens_stale?' · Token STALE':'');
+ $('#usageStatus').textContent=t(d.status==='LIVE'?'usage_live':d.status==='STALE'?'usage_stale':'usage_wait')+(d.today_stale?' · Local STALE':'')+(d.tokens_stale?' · Account token STALE':'');
  const stamp=n=>n?new Date(n*1000).toLocaleString(L==='zh'?'zh-CN':'en-US',{timeZone:'Asia/Shanghai',hour12:false}):'—';
- $('#usageAt').textContent=t('usage_at')+' · Token '+stamp(d.tokens_at)+' · '+t('usage_left')+' '+stamp(d.quota_at);
+ $('#usageAt').textContent=t('usage_at')+' · Local '+stamp(d.today_at)+' · Account '+stamp(d.tokens_at)+' · '+t('usage_left')+' '+stamp(d.quota_at);
 }).catch(()=>{$('#usageStatus').textContent=t('usage_wait')})}
 usageTick();setInterval(usageTick,15000);
 // ---- host memory trend: its own slow timer (30 s), the line is SVG ----

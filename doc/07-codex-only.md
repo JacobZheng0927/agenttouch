@@ -45,19 +45,35 @@ No card is needed for usage; account access requires internet on the Mac.
   quota; the small label says **remaining**.
   Refresh every five minutes. No API key, login changes or reset-credit spending.
   Official protocol: https://developers.openai.com/codex/app-server#auth-endpoints
-- Tokens: `account/usage/read` official account `dailyUsageBuckets`, including
+- Today tokens: local Codex desktop `token_usage_record` response records in
+  `~/.codex/sessions`, summed by their timestamps in UTC+8. Use each response's
+  `usage.total_tokens` once by `response_id`, including cached input already
+  present in that total; never sum cumulative thread/turn counters or the parallel
+  legacy `token_count` stream. Refresh every 30 seconds with incremental reads.
+  This is a local log count: other devices and calls without desktop response
+  records are excluded. Empty/unsupported logs show unavailable. Replay copies
+  share response IDs; the earliest observed timestamp wins, but replays whose
+  original file is no longer available can still affect date attribution.
+- Week tokens: `account/usage/read` official account `dailyUsageBuckets`, including
   other devices covered by that account service. Match today's calendar-date
   label and sum Monday through today; bucket timezone/attribution belongs to
   the service, and is not reinterpreted as a Beijing-time log scan.
-  The service can publish with a delay. Missing today/week buckets are **pending**,
+  The service can publish with a delay. Missing week buckets are **pending**,
   not zero. Only an explicit zero bucket produces zero.
-- Both endpoints refresh every five minutes and fail independently; there is no
-  local-log fallback or mixed-account aggregation. The board receives a heartbeat
+- Account endpoints refresh every five minutes and fail independently. Today's
+  local and this week's account counts intentionally have different scopes and
+  are labeled separately; do not add them together. The board receives a heartbeat
   every 30 seconds containing only totals, dates and quota windows, not credentials
   or conversation text. Reset timestamps are displayed in UTC+8.
 - Unknown quotas/counts show unavailable / `--`, not zero. Old account data is marked
   stale after ten minutes; host delivery after 90 seconds. The board
   abbreviates counts as K/M/B; the Mac page shows full integers.
+
+The working pet remains on the face page: stand the board with its three keys
+at the top. Side placement shows clock/usage/calendar. Working and done do not
+override a deliberate page; needs_you can. To keep the pet while turning the
+board, hold the left key for one second on the face page to pin it (hold again
+to unpin).
 
 After updating the host manually, copy **both** `agentpet_host.py` and
 `codex_usage.py`, plus `firmware/fonts/IBMPlexSans-{Bold,SemiBold}.ttf` and

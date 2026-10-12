@@ -11,6 +11,66 @@ import time
 TZ = dt.timezone(dt.timedelta(hours=8))
 
 
+class LocalTodayTokens:
+    """Desktop response records only; response_id also deduplicates fork replays."""
+    def __init__(self, root):
+        self.root = Path(root)
+        self.files = {}
+        self.day = None
+
+    def read(self, today):
+        if not self.root.is_dir():
+            return None
+        if today != self.day:
+            self.files.clear()
+            self.day = today
+        start = dt.datetime.combine(today, dt.time(), TZ).timestamp()
+        live = set()
+        for path in self.root.rglob('*.jsonl'):
+            stat = path.stat()
+            if stat.st_mtime < start:
+                continue
+            live.add(path)
+            identity = (stat.st_dev, stat.st_ino)
+            entry = self.files.get(path)
+            if not entry or entry['identity'] != identity or stat.st_size < entry['offset']:
+                entry = self.files[path] = {'identity': identity, 'offset': 0, 'records': {}}
+            with path.open('rb') as handle:
+                handle.seek(entry['offset'])
+                while True:
+                    line = handle.readline()
+                    if not line.endswith(b'\n'):
+                        break  # Retry an incomplete append next time.
+                    entry['offset'] = handle.tell()
+                    try:
+                        row = json.loads(line)
+                        if row.get('type') != 'token_usage_record':
+                            continue
+                        payload = row['payload']
+                        rid = payload['response_id']
+                        tokens = payload['usage']['total_tokens']
+                        stamp = dt.datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00'))
+                        if (not isinstance(rid, str) or not rid or stamp.tzinfo is None or
+                                not isinstance(tokens, int) or isinstance(tokens, bool) or tokens < 0):
+                            continue
+                        # Keep original dates too, so a retimestamped replay cannot move a
+                        # known older response into today. Cached/reasoning subsets aren't added.
+                        prev = entry['records'].get(rid)
+                        if prev is None or stamp < prev[0]:
+                            entry['records'][rid] = (stamp, tokens)
+                    except (ValueError, TypeError, KeyError, AttributeError):
+                        continue
+        self.files = {p: v for p, v in self.files.items() if p in live}
+        records = {}
+        for entry in self.files.values():
+            for rid, record in entry['records'].items():
+                if rid not in records or record[0] < records[rid][0]:
+                    records[rid] = record
+        # An existing but unsupported/empty log is unknown, rather than a false zero.
+        return (sum(n for stamp, n in records.values() if stamp.astimezone(TZ).date() == today)
+                if records else None)
+
+
 def read_account_usage():
     # Prefer the desktop's CLI: Homebrew may lag its account API/schema.
     candidates = [Path('/Applications') / app / 'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
