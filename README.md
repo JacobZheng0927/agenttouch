@@ -4,6 +4,9 @@
 
 <h1 align="center">AgentTouch</h1>
 
+This fork defaults to Codex only and skips Claude hooks during installation.
+See [Codex-only changes and validation](doc/07-codex-only.md).
+
 <p align="center">
   <b>A small face on your desk for your AI coding agents.</b><br>
   It shows what Claude Code, Codex, Qoder and QwenWork are doing, approves with a tap, and takes dictation.

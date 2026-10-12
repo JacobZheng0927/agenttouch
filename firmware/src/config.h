@@ -73,6 +73,9 @@ static const AgentDef AGENTS[] = {
   { "forest",    "Forest",   C565(0xF2, 0xA3, 0x3C) },  // amber 琥珀 (候选, 真机四灯并排看过再定)
 };
 static const int N_AGENTS = sizeof(AGENTS) / sizeof(AGENTS[0]);
+// Keep upstream wire/report indices while this fork exposes only Codex.
+static const int CODEX_SEAT = 1;
+static bool agentEnabled(int seat) { return seat == CODEX_SEAT; }
 
 // A background agent flipping to needs_you steals the big face (the overview
 // dots always hint at the others). Set 0 to keep focus fully manual.
@@ -102,7 +105,7 @@ static const int N_AGENTS = sizeof(AGENTS) / sizeof(AGENTS[0]);
 #define BRIGHT_DIM  100
 #define BRIGHT_LOW  40
 
-#define FW_VERSION "v1.1"
+#define FW_VERSION "v1.1-codex"
 #define FW_BUILD   __DATE__ " " __TIME__   // hello "build": tells an OTA apart from the old image
 
 // Clock/calendar pages use one fixed accent — user picked blue over the

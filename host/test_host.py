@@ -40,6 +40,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import agentpet_host as H   # noqa: E402
 
+# Exercise retained upstream integrations; test_codex_only.py checks fork defaults.
+H.ENABLED_AGENTS = set(H.AGENTS) | {None}  # Include unassigned catalog entries.
+
 
 # ------------------------------------------------------------------ helpers
 def png_decode(png):

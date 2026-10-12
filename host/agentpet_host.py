@@ -63,13 +63,14 @@ LOG_PATH = Path("/tmp/agentpet_host.log")
 
 # Which board this host serves: the first log line, /state and `pet status` say it.
 PRODUCT = "s3"
-HOST_VERSION = "2026-10-08a"
+HOST_VERSION = "2026-10-12-codex"
 
 # `forest` (Qoder Forest, the "Qoder CN.app" desktop client, split from the
 # IDE seat 2026-09-13) MUST stay last: report_msg() emits w[]/d[] in
 # this order and both boards read them by index. `qoderwork` keeps its
 # historical wire id (the board has it baked in).
 AGENTS = ["claude", "codex", "qoder", "qoderwork", "forest"]
+ENABLED_AGENTS = {"codex"}  # Preserve upstream report indices; expose one seat.
 
 # Process detection: regex tried against the full `ps` command line.
 # `exclude` removes lines that belong to a more specific sibling agent.
@@ -203,6 +204,8 @@ def scan_agents():
         ps = []
     rows = []
     for e in AGENT_CATALOG:
+        if e.get("seat") not in ENABLED_AGENTS:
+            continue
         where = None
         for app in e.get("apps", []):
             for d in (Path("/Applications"), home / "Applications"):
@@ -313,14 +316,8 @@ FOCUS_APPS = {
     "forest":    "Qoder CN",        # Qoder Forest desktop
 }
 resolve_app_variants(FOCUS_APPS)    # international Qoder build on this Mac? use its names
-# After focus follow raises the app, optionally press its "focus the chat
-# input" shortcut ~0.6 s later so dictation lands in the right box.
-# Calibrated 2026-08-29: Warp / Qoder / QwenWork focus their input on
-# activation (no key needed). ChatGPT ships a "聚焦主聊天输入框" command
-# UNASSIGNED (its web shortcut shift+esc means "mark all as read" in the
-# desktop app — guessed once, hit live); we bind it to ⌃⇧I in
-# ChatGPT ➜ Settings ➜ Keyboard Shortcuts and press that here.
-FOCUS_KEYS = {"codex": "ctrl+shift+i"}
+# Optionally configure the desktop app's input-focus shortcut after assigning it.
+FOCUS_KEYS = {}  # No unconfigured input shortcut on this Mac.
 
 # Reverse focus follow (doc/06 "最后意图获胜"): clicking into an agent's app
 # on the Mac is an intent too, so the board's seat follows the frontmost app
@@ -576,7 +573,7 @@ board_stats = {"up": None, "heap": None, "min": None, "big": None,
                "rst": None, "at": 0.0, "stale": False}
 _board_min_floor = None  # lowest `min` already logged, reset by each new hello
 OTA_CARD_PATH = "/agentpet/fw/new.bin"
-active_agent = "claude"  # last selection from the board
+active_agent = "codex"  # last selection from the board
 board_select_at = 0.0    # last seat switch the BOARD asked for (reverse follow yields to it)
 host_raise_at = 0.0      # last time WE raised an app (reverse follow must not chase its own tail)
 voice_down = False       # the board's voice key is held (never move the seat mid-dictation)
@@ -871,6 +868,8 @@ def front_agent(front_str, apps=None):
     # both appear in one front string (2026-09-13), the specific one owns it
     best = None
     for agent, app in apps.items():
+        if agent not in ENABLED_AGENTS:
+            continue
         for name in (app if isinstance(app, (tuple, list, set)) else (app,)):
             name = str(name or "").strip().lower()
             if name and name in parts and (best is None or len(name) > len(best[1])):
@@ -1157,6 +1156,8 @@ def scan_processes():
         except ValueError:
             continue
         for agent, rule in PROC_RULES.items():
+            if agent not in ENABLED_AGENTS:
+                continue
             if re.search(rule["match"], args):
                 if rule["exclude"] and re.search(rule["exclude"], args):
                     continue
@@ -2539,6 +2540,10 @@ def aggregate():
             qwen_run["since"] = 0.0
             qwen_run["needs_until"] = 0.0
 
+        for agent in AGENTS:
+            if agent not in ENABLED_AGENTS:
+                state[agent] = "off"
+
 # ------------------------------------------------------------------ 今日战报
 # Daily battle report: per-agent working seconds + done counts, accumulated
 # on the 1 s watcher tick, reset at local midnight, persisted across host
@@ -2605,12 +2610,14 @@ def watcher_loop():
         if ticks % 3 == 0:
             scan_processes()
         try:
-            poll_app_logs()          # QwenWork approvals + Qoder Quest states
+            if ENABLED_AGENTS & {"qoder", "qoderwork", "forest"}:
+                poll_app_logs()
         except Exception as e:
             log("app log poll error:", e)
         aggregate()
         try:
-            sess_tick()                  # Claude sessions -> board row
+            if "claude" in ENABLED_AGENTS:
+                sess_tick()
         except Exception as e:
             log("claude sessions error:", e)
         stretch_tick()
@@ -7670,7 +7677,7 @@ class HookHandler(BaseHTTPRequestHandler):
                 "fonts": dict(font_rt),
                 "agents": snap["agents"],
                 "active": snap["active"],
-                "seats": list(AGENTS),
+                "seats": [a for a in AGENTS if a in ENABLED_AGENTS],
                 "installed": seats_installed(),
                 "owner": owner_snapshot(),
                 "skins": dict(board_skins),       # {} until a board said hello

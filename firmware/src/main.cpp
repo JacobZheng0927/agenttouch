@@ -97,7 +97,7 @@ static bool pmuOk = false, imuOk = false, tpOk = false;
 
 // ---------- app state ----------
 static uint8_t  agentStates[N_AGENTS] = {ST_OFF};   // ST_OFF == 0: the rest zero-init
-static int      selected  = 0;
+static int      selected  = CODEX_SEAT;
 static bool     hostUp    = false;
 static bool     listening = false;
 static uint32_t nudgeUntil = 0;   // pin the status toast until this millis()
@@ -286,7 +286,7 @@ static WiFiClient sock;
 // ---------- helpers ----------
 static int agentIdxById(const char* id) {
   for (int i = 0; i < N_AGENTS; i++)
-    if (strcmp(AGENTS[i].id, id) == 0) return i;
+    if (agentEnabled(i) && strcmp(AGENTS[i].id, id) == 0) return i;
   return -1;
 }
 
@@ -335,20 +335,9 @@ static bool anySeatOn() {
     if (agentStates[i] != ST_OFF) return true;
   return false;
 }
-// step +1 = next index, -1 = previous. With every seat off nothing is
-// skipped: all five stay reachable and the picture does not collapse (the
-// host being down puts us here too). With exactly one seat on it returns
-// that seat — including when it IS the current one, so a swipe becomes a
-// no-op instead of landing on a dead app.
+// Codex stays selected even before the host connects or after it exits.
 static int nextSeat(int from, int step) {
-  int adv = step > 0 ? 1 : N_AGENTS - 1;
-  int n = (from + adv) % N_AGENTS;
-  if (showOffSeats || !anySeatOn()) return n;
-  for (int k = 0; k < N_AGENTS; k++) {
-    if (agentStates[n] != ST_OFF) return n;
-    n = (n + adv) % N_AGENTS;
-  }
-  return n;                                    // unreachable: anySeatOn() held
+  return CODEX_SEAT;
 }
 
 // ---- the one door to the TCP socket ---------------------------------------
@@ -2177,7 +2166,7 @@ static void netPoll() {
     d["t"] = "hello"; d["dev"] = "amoled216"; d["v"] = 2;   // v2 = carries 遥测
     d["up"] = uptimeSec();
     d["rst"] = resetReasonName(esp_reset_reason());         // why we last booted
-    // Which seat we woke up on. A reboot resets `selected` to 0 while the
+    // Which seat we woke up on. A reboot selects Codex while the
     // host still holds the seat it followed to before the OTA, and the first
     // dictation/approval after the reboot then lands in the wrong app until
     // the user swipes. The hello carries the truth so the host can realign.

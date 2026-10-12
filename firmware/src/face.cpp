@@ -534,7 +534,7 @@ static void drawToast(Arduino_Canvas* c, const FaceFrame& f, uint32_t t,
   bool vis[N_AGENTS];
   int nvis = 0;
   for (int i = 0; i < N_AGENTS; i++) {
-    vis[i] = showAll || f.agentStates[i] != ST_OFF || i == f.agentIdx;
+    vis[i] = agentEnabled(i) && (showAll || f.agentStates[i] != ST_OFF || i == f.agentIdx);
     if (vis[i]) nvis++;
   }
   float k = kDots;

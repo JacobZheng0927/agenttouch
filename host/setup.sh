@@ -112,7 +112,7 @@ else
       if "$PY" -m pip install --user -q --disable-pip-version-check --no-warn-script-location --only-binary=:all: \
            -i "$PIP_INDEX" $PIL_PKG >>/tmp/agentpet_setup_pip.log 2>&1; then did "Pillow 已安装"
       else bad "Pillow 没装上（tail /tmp/agentpet_setup_pip.log）"; FAIL=1; fi ;;
-    *) MANUAL+=("装 Pillow（生成中文字库要它，编译固件前必须装）：$PY -m pip install --user $PIL_PKG（或重跑 host/setup.sh --pillow）") ;;
+    *) MANUAL+=("装 Pillow（生成中文字库要它，编译固件前必须装）：$PY -m pip install --user ${PIL_PKG}（或重跑 host/setup.sh --pillow）") ;;
   esac
 fi
 
@@ -244,11 +244,8 @@ fi
 case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN 不在 PATH 里：在 ~/.zshrc 加一行 export PATH=\"$BIN:\$PATH\"" ;; esac
 
 # ---------------------------------------------------------------------------
-step "7. Claude Code hooks"
-n=$(grep -o 'src=agentpet' "$HOME/.claude/settings.json" 2>/dev/null | wc -l | tr -d ' ')
-# older hooks lack the session headers (several Claude Code windows): re-run
-if [ "$n" -ge 7 ] && grep -q 'X-AT-Pid' "$HOME/.claude/settings.json"; then ok "~/.claude/settings.json 已有 $n 条"
-elif doit "install_hooks.py"; then "$PY" "$SRC/install_hooks.py" | sed 's/^/    /'; did "已装"; fi
+step "7. Codex-only"
+ok "跳过 Claude Code hooks，不修改 ~/.claude/settings.json"
 
 # ---------------------------------------------------------------------------
 step "8. Codex（ChatGPT.app）"
@@ -326,12 +323,7 @@ fi
 # ---------------------------------------------------------------------------
 step "9. 可选件（缺了只是那项功能不亮）"
 if command -v media-control >/dev/null 2>&1 || [ -x /opt/homebrew/bin/media-control ]; then ok "media-control（正在播放页）"
-elif command -v brew >/dev/null 2>&1; then
-  if doit "brew install media-control"; then
-    brew tap ungive/media-control >/dev/null 2>&1; brew install media-control >/dev/null 2>&1 \
-      && did "media-control" || warn "media-control 没装上（正在播放页不会亮）：brew tap ungive/media-control && brew install media-control"
-  fi
-else warn "没有 Homebrew：正在播放页不会亮（要的话装 brew 后 brew tap ungive/media-control && brew install media-control）"; fi
+else warn "跳过可选 media-control（正在播放页需要它）：brew tap ungive/media-control && brew install media-control"; fi
 
 if system_profiler SPAudioDataType 2>/dev/null | grep -q 'BlackHole 2ch'; then ok "BlackHole 2ch（板麦听写）"
 else warn "没有 BlackHole 2ch：板麦听写不可用，右键听写用 Mac 麦。要的话 brew install --cask blackhole-2ch（会要开机密码）"; fi
