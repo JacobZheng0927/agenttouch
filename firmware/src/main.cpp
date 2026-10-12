@@ -1688,7 +1688,7 @@ static void handleLine(const String& line) {
     else if (!strcmp(pv, "clock"))    { pg = PAGE_CLOCK;    sub = CV_CLOCK; }
     else if (!strcmp(pv, "np") || !strcmp(pv, "play")) { pg = PAGE_CLOCK; sub = CV_NP; }
     else if (!strcmp(pv, "usage"))    { pg = PAGE_CLOCK;    sub = CV_USAGE; }
-    else if (!strcmp(pv, "calendar")) { pg = PAGE_CALENDAR; sub = 0; }
+    else if (!strcmp(pv, "calendar") || !strcmp(pv, "todo")) { pg = PAGE_CALENDAR; sub = 0; }
     bool ok = pg != 255;
     if (ok && sec > 0) {
       if ((int32_t)(viewUntil - millis()) <= 0) {   // first lock: remember where the user was
@@ -1745,6 +1745,8 @@ static void handleLine(const String& line) {
     noteActivity();
   } else if (strcmp(t, "usage") == 0) {
     usageSet(d);
+  } else if (strcmp(t, "todo") == 0) {
+    todoSet(d);
   } else if (strcmp(t, "almanac") == 0) {   // daily cyber-almanac from host
     const char* ch = d["ch"] | "#3EE6D2";
     uint32_t v = strtoul(ch[0] == '#' ? ch + 1 : ch, nullptr, 16);
@@ -2868,6 +2870,12 @@ static void touchPoll() {
         }
         if (!half) lastTapAt = nowMs;
       }
+    } else if (shownPage == PAGE_CALENDAR) {
+      int px, py;
+      pageXY(tpLastX, tpLastY, px, py);
+      JsonDocument command;
+      if (todoTouch(command, px, py, vdx, vdy)) sendJson(command);
+      noteActivity();
     } else if (shownPage == PAGE_CLOCK && clockView == CV_NP && vv) {
       // 播放页 up/down = volume ±10, like the face page; the toast is the
       // bar along the bottom band. Immediate: the petting deferral is a
@@ -3540,7 +3548,7 @@ void loop() {
           drawClockPage(canvas, now, PAGE_ACCENT);
         }
       } else {
-        drawCalendarPage(canvas, now, PAGE_ACCENT);
+        drawTodoPage(canvas, now);
       }
       // the same corner pin the face wears: seat color for 10 s, then grey
       if (pinned) drawPagePin(canvas, (int32_t)(pinLitUntil - now) > 0, AGENTS[selected].color);

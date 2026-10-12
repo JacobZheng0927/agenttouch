@@ -576,6 +576,214 @@ void drawUsagePage(Arduino_Canvas* c, uint32_t t, uint16_t accent) {
   afPrint(c, UF_SMALL, 458 - afWidth(UF_SMALL, text), 459, text, US_MUTED);
 }
 
+// ---------------------------------------------------------------- tasks (calendar placement)
+static const AFont TF_TITLE = {AFY_CP, AFY_OFF, AFY_DATA, AFY_COUNT, AFY_ASCENT, -1};
+static const uint16_t TD_CARD = C565(0x12, 0x14, 0x19);
+struct TodoItem { char id[13], title[145]; bool done, important; };
+static TodoItem todoItems[16];
+static uint8_t todoN = 0, todoOrder[16], todoOffset = 0, todoView = 0;
+static uint32_t todoRev = 0, todoAt = 0, todoUndoUntil = 0, todoPendingAt = 0, todoErrorUntil = 0;
+static uint32_t todoRequestAt = 0;
+static bool todoBusy = false, todoLoaded = false, todoPendingDone = false;
+static char todoDate[12] = "", todoCurrent[13] = "", todoPending[13] = "";
+static uint32_t focusEnd = 0, focusLeft = 25 * 60000;
+static bool focusRunning = false;
+
+static void todoSort() {
+  for (int i = 0; i < todoN; i++) todoOrder[i] = i;
+  for (int i = 1; i < todoN; i++) {
+    uint8_t v = todoOrder[i]; int j = i;
+    int score = todoItems[v].done * 2 + !todoItems[v].important;
+    while (j > 0) {
+      TodoItem& p = todoItems[todoOrder[j - 1]];
+      if (p.done * 2 + !p.important <= score) break;
+      todoOrder[j] = todoOrder[j - 1]; j--;
+    }
+    todoOrder[j] = v;
+  }
+}
+
+void todoSet(JsonDocument& d) {
+  uint32_t rev = d["rev"] | 0U;
+  if (rev != todoRev || d["ok"].is<bool>()) todoBusy = false;
+  todoRev = rev;
+  if (strlen(d["error"] | "")) todoErrorUntil = millis() + 4000;
+  uint8_t oldN = todoN;
+  todoN = 0;
+  for (JsonObject item : d["items"].as<JsonArray>()) {
+    if (todoN == 16) break;
+    TodoItem& dst = todoItems[todoN++];
+    strlcpy(dst.id, item["id"] | "", sizeof(dst.id));
+    strlcpy(dst.title, item["title"] | "", sizeof(dst.title));
+    dst.done = item["done"] | false;
+    dst.important = item["important"] | false;
+  }
+  strlcpy(todoDate, d["date"] | "", sizeof(todoDate));
+  todoUndoUntil = millis() + min(10000U, d["undo_ms"] | 0U);
+  todoAt = millis(); todoLoaded = true;
+  if (oldN != todoN || !todoPendingAt) todoSort();
+  todoOffset = min((int)todoOffset, todoN ? ((todoN - 1) / 3) * 3 : 0);
+}
+
+static TodoItem* todoChosen() {
+  for (int i = 0; i < todoN; i++) if (!strcmp(todoItems[i].id, todoCurrent)) return &todoItems[i];
+  return nullptr;
+}
+
+// Wrap by glyph, with an ellipsis on the final line. Consume unsupported emoji as one '?'.
+static void todoText(Arduino_Canvas* c, const char* text, int x, int y, int width,
+                     int lines, uint16_t color, uint16_t bg = BG) {
+  const char* p = text; int pen = x, line = 0;
+  while (*p && line < lines) {
+    uint32_t cp;
+    if (((uint8_t)*p & 0xF8) == 0xF0) { cp = '?'; p += 4; }
+    else cp = afDecode(p);
+    const uint8_t* g = afGlyph(TF_TITLE, cp);
+    if (!g) { cp = '?'; g = afGlyph(TF_TITLE, cp); }
+    int advance = g ? g[2] : 19;
+    if (pen + advance > x + width) { line++; pen = x; }
+    if (line >= lines) break;
+    if (line == lines - 1 && *p && pen + advance + 26 > x + width) {
+      afChar(c, TF_TITLE, pen, y + line * 34, 0x2026, color, bg); break;
+    }
+    pen += afChar(c, TF_TITLE, pen, y + line * 34, cp, color, bg);
+  }
+}
+
+static uint32_t focusRemaining(uint32_t now) {
+  if (!focusRunning) return focusLeft;
+  int32_t left = (int32_t)(focusEnd - now);
+  if (left <= 0) { focusRunning = false; focusLeft = 0; return 0; }
+  return (uint32_t)left;
+}
+
+static void todoButton(Arduino_Canvas* c, int x, int y, int w, const char* text, bool primary) {
+  uint16_t bg = primary ? US_PURPLE : TD_CARD;
+  c->fillRoundRect(x, y, w, 60, 18, bg);
+  afPrintCenter(c, TF_TITLE, x + w / 2, y + 30, text, WHITE, bg);
+}
+
+void drawTodoPage(Arduino_Canvas* c, uint32_t t) {
+  c->fillScreen(BG);
+  if (todoBusy && (int32_t)(t - todoRequestAt) > 5000) {
+    todoBusy = false; todoErrorUntil = t + 4000;
+  }
+  if (todoPendingAt && (int32_t)(t - todoPendingAt) > 650) { todoSort(); todoPendingAt = 0; }
+  TodoItem* chosen = todoChosen();
+  if (todoView && !chosen) todoView = 0;
+  if (todoView) {
+    afPrint(c, UF_TEXT, 26, 48, "<", US_MUTED);
+    afPrintTrack(c, UF_SMALL, 70, 45, todoView == 2 ? "FOCUS SESSION" : "ONE THING AT A TIME", US_MUTED, 1);
+    todoText(c, chosen->title, 26, 108, 428, todoView == 2 ? 2 : 5, WHITE);
+    if (todoView == 2) {
+      uint32_t seconds = (focusRemaining(t) + 999) / 1000;
+      char text[12]; snprintf(text, sizeof(text), "%02u:%02u", (unsigned)(seconds / 60), (unsigned)(seconds % 60));
+      c->setFont(u8g2_font_logisoso78_tn); c->setTextSize(1);
+      int w = trackWidth(c, text, 0);
+      trackPrint(c, (480 - w) / 2, 278, text, 0, WHITE);
+      c->fillRoundRect(26, 307, 428, 4, 2, US_TRACK);
+      int done = 428 * (1.0f - focusRemaining(t) / 1500000.0f);
+      if (done > 0) c->fillRoundRect(26, 307, min(done, 428), 4, 2, US_PURPLE);
+      todoButton(c, 26, 359, 200, focusRunning ? "暂停" : focusLeft ? "继续" : "再来一次", false);
+      todoButton(c, 240, 359, 214, "完成任务", true);
+    } else {
+      todoButton(c, 26, 285, 428, chosen->important ? "取消置顶" : "置顶任务", false);
+      todoButton(c, 26, 359, 200, chosen->done ? "恢复待办" : "完成任务", false);
+      todoButton(c, 240, 359, 214, "开始专注", true);
+    }
+  } else {
+    afPrint(c, TF_TITLE, 26, 48, "今日待办", WHITE);
+    afPrint(c, UF_SMALL, 454 - afWidth(UF_SMALL, todoDate), 43, todoDate, US_MUTED);
+    int left = 0; for (int i = 0; i < todoN; i++) if (!todoItems[i].done) left++;
+    char text[24]; snprintf(text, sizeof(text), "%02d", left);
+    afPrint(c, UF_STAT, 26, 101, text, WHITE);
+    afPrintTrack(c, UF_SMALL, 91, 98, "TASKS LEFT", US_MUTED, 1);
+    snprintf(text, sizeof(text), "%d / %d DONE", todoN - left, todoN);
+    afPrint(c, UF_SMALL, 454 - afWidth(UF_SMALL, text), 98, text, US_PURPLE);
+    c->fillRoundRect(26, 117, 428, 3, 1, US_TRACK);
+    if (todoN > left) c->fillRoundRect(26, 117, 428 * (todoN - left) / todoN, 3, 1, US_PURPLE);
+    if (!todoN) {
+      miniEyes(c, t, 216);
+      afPrintCenter(c, TF_TITLE, 240, 304, todoLoaded ? "给今天留一点空间" : "等待 Mac 连接", WHITE, BG);
+      afPrintCenter(c, UF_SMALL, 240, 345, "ADD A TASK ON YOUR MAC", US_MUTED, BG);
+    }
+    for (int row = 0; row < 3 && todoOffset + row < todoN; row++) {
+      TodoItem& item = todoItems[todoOrder[todoOffset + row]];
+      int y = 136 + row * 90;
+      bool checked = todoPendingAt && !strcmp(item.id, todoPending) ? todoPendingDone : item.done;
+      c->fillRoundRect(22, y, 436, 80, 16, TD_CARD);
+      c->drawCircle(47, y + 40, 13, checked ? US_PURPLE : US_MUTED);
+      if (checked) {
+        c->fillCircle(47, y + 40, 13, US_PURPLE);
+        c->drawLine(41, y + 40, 46, y + 45, WHITE); c->drawLine(46, y + 45, 54, y + 35, WHITE);
+      }
+      todoText(c, item.title, 78, y + 31, 342, 2, checked ? US_MUTED : WHITE, TD_CARD);
+      if (checked) c->drawLine(78, y + 26, 410, y + 26, US_MUTED);
+      if (item.important) c->fillCircle(437, y + 17, 3, US_PURPLE);
+    }
+    if ((int32_t)(todoUndoUntil - t) > 0) {
+      c->fillRoundRect(149, 419, 182, 44, 22, TD_CARD);
+      afPrintCenter(c, TF_TITLE, 240, 441, "撤销操作", WHITE, TD_CARD);
+    } else {
+      afPrint(c, UF_SMALL, 26, 453, "SWIPE TO BROWSE", US_MUTED);
+      snprintf(text, sizeof(text), "%d / %d", todoN ? todoOffset / 3 + 1 : 1, max(1, (todoN + 2) / 3));
+      afPrint(c, UF_SMALL, 454 - afWidth(UF_SMALL, text), 453, text, US_MUTED);
+    }
+  }
+  if ((int32_t)(todoErrorUntil - t) > 0) {
+    c->fillRoundRect(85, 303, 310, 48, 24, US_TRACK);
+    afPrintCenter(c, TF_TITLE, 240, 327, "同步失败，请重试", WHITE, US_TRACK);
+  }
+  else if (!todoAt || (int32_t)(t - todoAt) > 90000)
+    afPrint(c, UF_SMALL, 26, 473, "MAC OFFLINE - READ ONLY", US_MUTED);
+}
+
+bool todoTouch(JsonDocument& command, int x, int y, int dx, int dy) {
+  uint32_t now = millis();
+  TodoItem* item = todoChosen();
+  bool swipe = abs(dx) > 40 || abs(dy) > 40;
+  if (todoView) {
+    if ((swipe && dx > 60) || (!swipe && x < 90 && y < 80)) { todoView = 0; return false; }
+    if (swipe || !item) return false;
+    if (y >= 359 && y < 419 && ((todoView == 1 && x >= 240) || (todoView == 2 && x < 230))) {
+      if (todoView == 1) {
+        todoView = 2; focusLeft = 1500000; focusRunning = true; focusEnd = now + focusLeft;
+      } else if (focusRunning) {
+        focusLeft = focusRemaining(now); focusRunning = false;
+      } else {
+        if (!focusLeft) focusLeft = 1500000;
+        focusEnd = now + focusLeft; focusRunning = true;
+      }
+      return false;
+    }
+    if (todoView == 1 && y >= 285 && y < 345) command["important"] = !item->important;
+    else if (y >= 359 && y < 419) {
+      command["done"] = todoView == 2 ? true : !item->done;
+      focusRunning = false; todoView = 0;
+    } else return false;
+    command["op"] = "set"; command["id"] = item->id;
+  } else {
+    if (swipe) {
+      if (abs(dy) > abs(dx)) todoOffset = constrain((int)todoOffset + (dy < 0 ? 3 : -3), 0, todoN ? ((todoN - 1) / 3) * 3 : 0);
+      return false;
+    }
+    if (y >= 419 && y < 465 && x >= 149 && x <= 331 && (int32_t)(todoUndoUntil - now) > 0) {
+      command["op"] = "undo";
+    } else if (y >= 136 && y < 396 && (y - 136) % 90 < 80) {
+      int pos = todoOffset + (y - 136) / 90;
+      if (pos >= todoN) return false;
+      item = &todoItems[todoOrder[pos]];
+      if (x >= 78) { strlcpy(todoCurrent, item->id, sizeof(todoCurrent)); todoView = 1; return false; }
+      command["op"] = "set"; command["id"] = item->id; command["done"] = !item->done;
+      strlcpy(todoPending, item->id, sizeof(todoPending)); todoPendingDone = !item->done;
+    } else return false;
+  }
+  if (todoBusy || !todoAt || (int32_t)(now - todoAt) > 90000) { todoErrorUntil = now + 4000; return false; }
+  command["t"] = "todo_action"; command["rev"] = todoRev;
+  todoPendingAt = todoRequestAt = now; todoBusy = true;
+  return true;
+}
+
 // ---------------------------------------------------------------- play page
 // 播放页 ×2: the clock
 // orientation's two flip sides share one compact media card. 当前播放 (left

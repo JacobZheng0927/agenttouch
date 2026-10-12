@@ -253,7 +253,7 @@ class ProtocolTests(unittest.TestCase):
         kinds = [json.loads(r)["t"] for r in self.replies]
         # a TCP hello is first told who we are (认领制: IP drift, first owner)
         # ... and the Claude session row last (empty with no sessions)
-        self.assertEqual(kinds, ["hostinfo", "time", "usage", "report", "cfg", "sess"])
+        self.assertEqual(kinds, ["hostinfo", "time", "usage", "todo", "report", "cfg", "sess"])
         tm = json.loads(self.replies[1])
         self.assertAlmostEqual(tm["epoch"], before, delta=5)      # UTC seconds ...
         self.assertEqual(tm["off"], time.localtime().tm_gmtoff)   # ... plus the host's tz offset

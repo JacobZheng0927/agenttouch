@@ -1,7 +1,7 @@
 #!/usr/bin/python3
-"""Bake OFL-licensed IBM Plex fonts with the existing 4bpp glyph format."""
+"""Bake IBM Plex and this Mac's Chinese font with the existing 4bpp format."""
 from pathlib import Path
-from gen_almanac_font import rasterize, emit
+from gen_almanac_font import rasterize, emit, HIRAGINO, find_face, gb2312_chars
 
 root = Path(__file__).resolve().parent.parent / 'firmware'
 with (root / 'src/usage_font.h').open('w') as out:
@@ -13,4 +13,8 @@ with (root / 'src/usage_font.h').open('w') as out:
             ('AFX', 'SemiBold', 14, ''.join(chr(n) for n in range(32, 127)))):
         ascent, glyphs = rasterize((str(root / 'fonts' / ('IBMPlexSans-' + weight + '.ttf')), 0), px, sorted(set(chars)))
         emit(name, ascent, glyphs, out)
+    chars = sorted(gb2312_chars() | set(chr(n) for n in range(32, 127)) | set('…'))
+    face, _ = find_face(HIRAGINO, 'Hiragino Sans GB', ('W3', 'W6'))
+    ascent, glyphs = rasterize((HIRAGINO, face), 26, chars)
+    emit('AFY', ascent, glyphs, out)
 print('usage_font.h ready')

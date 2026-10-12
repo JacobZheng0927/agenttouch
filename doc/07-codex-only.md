@@ -27,15 +27,15 @@ macOS Bluetooth and Accessibility permissions and Codex hook trust require the
 user's review. The approve bubble still sends the configured key to the focused
 desktop app; verify this on a harmless permission request before relying on it.
 
-The clock and calendar show `YYYYMMDD`, with a 24-hour clock and weekday instead
+The clock and task page show `YYYYMMDD`, with a 24-hour clock and weekday instead
 of sexagenary dates / double-hour names. Almanac and podcast pages are removed
 from navigation. Podcast HTTP operations, player startup/resume, automatic
 podcast/almanac card pushes and fortune voice prefetch are disabled. The Mac
 now-playing page and pet audio remain available.
 
 From the clock, swipe right for **Codex usage**, left to return. Swipe left from
-the clock for Mac now-playing. The speaker-side orientation now shows the normal
-calendar. On the Mac, open `http://127.0.0.1:8788/settings#usage` for exact counts.
+the clock for Mac now-playing. The orientation with the three buttons on the right now shows the
+task list. On the Mac, open `http://127.0.0.1:8788/settings#usage` for exact counts.
 No card is needed for usage; account access requires internet on the Mac.
 
 - Quota: read-only `account/rateLimits/read` via the installed Codex app-server,
@@ -70,13 +70,13 @@ No card is needed for usage; account access requires internet on the Mac.
   abbreviates counts as K/M/B; the Mac page shows full integers.
 
 The working pet remains on the face page: stand the board with its three keys
-at the top. Side placement shows clock/usage/calendar. Working and done do not
+at the top. Side placement shows clock/usage/tasks. Working and done do not
 override a deliberate page; needs_you can. To keep the pet while turning the
 board, hold the left key for one second on the face page to pin it (hold again
 to unpin).
 
-After updating the host manually, copy **both** `agentpet_host.py` and
-`codex_usage.py`, plus `firmware/fonts/IBMPlexSans-{Bold,SemiBold}.ttf` and
+After updating the host manually, copy `agentpet_host.py`, `codex_usage.py` and
+`todo_store.py`, plus `firmware/fonts/IBMPlexSans-{Bold,SemiBold}.ttf` and
 `firmware/fonts/LICENSE-OFL.txt` into `~/.agentpet/`, then restart
 `com.agentpet.host`. `host/setup.sh` includes these files automatically.
 
@@ -86,3 +86,26 @@ screen and full-screen quota specification. This fork uses its black/white/purpl
 hierarchy and IBM Plex typography while keeping AgentTouch's graphics stack and
 pet. No VibePulse application code is copied. IBM Plex comes from the IBM project
 under the bundled SIL OFL license in `firmware/fonts/LICENSE-OFL.txt`.
+
+
+## Local tasks
+
+Place the three buttons on the **right** to open the task list, replacing the
+calendar in that orientation. Open `http://127.0.0.1:8788/settings#todo` on the Mac
+to add, edit, pin and delete tasks. Changes save immediately to
+`~/.agentpet/todos.json`; no cloud account or SD card is needed. Maximum 16 tasks,
+48 characters and 144 UTF-8 bytes per title. Common simplified Chinese and ASCII
+are included in flash; unsupported glyphs and emoji appear as `?`.
+
+The board shows three tasks per page. Swipe vertically to browse; tap the circle
+to complete or restore, or tap the title for details. Pinned tasks come first
+within unfinished/completed groups. The last change can be undone for ten seconds,
+including changes made on the Mac. Concurrent edits are rejected and refreshed
+using a revision number, so a stale screen cannot overwrite newer tasks.
+
+Details offer pin/unpin and a 25-minute focus timer. The timer is local to the
+board and resets when restarted; it does not control Codex or the Mac. After
+90 seconds without a host update, the list becomes read-only until reconnected.
+Task changes are acknowledged only after the Mac has saved them; requests time
+out after five seconds. Invalid persisted data is preserved and reported rather
+than replaced with an empty list.

@@ -17,6 +17,9 @@ void drawClockPage(Arduino_Canvas* c, uint32_t t, uint16_t accent);
 void drawCalendarPage(Arduino_Canvas* c, uint32_t t, uint16_t accent);
 void usageSet(JsonDocument& d);
 void drawUsagePage(Arduino_Canvas* c, uint32_t t, uint16_t accent);
+void todoSet(JsonDocument& d);
+void drawTodoPage(Arduino_Canvas* c, uint32_t t);
+bool todoTouch(JsonDocument& command, int x, int y, int dx, int dy);
 
 
 // 播放页: the clock orientation's other flip side. One page,

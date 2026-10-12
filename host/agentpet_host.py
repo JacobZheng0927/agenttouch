@@ -53,6 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote
 from codex_usage import read_account_usage, account_tokens, quota_windows, LocalTodayTokens, TZ
+from todo_store import TodoStore, todo_line
 
 # ------------------------------------------------------------------ config
 TCP_PORT = 8737          # board connects here
@@ -64,7 +65,7 @@ LOG_PATH = Path("/tmp/agentpet_host.log")
 
 # Which board this host serves: the first log line, /state and `pet status` say it.
 PRODUCT = "s3"
-HOST_VERSION = "2026-10-12-codex-local"
+HOST_VERSION = "2026-10-12-codex-todo"
 
 # `forest` (Qoder Forest, the "Qoder CN.app" desktop client, split from the
 # IDE seat 2026-09-13) MUST stay last: report_msg() emits w[]/d[] in
@@ -2605,6 +2606,12 @@ def push_time():
 usage = {"t": "usage", "today": None, "week": None, "windows": [],
          "tokens_at": 0, "today_at": 0, "quota_at": 0, "date": "", "week_start": ""}
 usage_lock = threading.Lock()
+todos = TodoStore(Path.home() / '.agentpet' / 'todos.json')
+
+def todo_action(command):
+    result = todos.apply(command)
+    push_raw(todo_line(result))
+    return result
 
 def usage_snapshot():
     with usage_lock:
@@ -2645,6 +2652,7 @@ def usage_loop():
         except OSError as e:
             log("local token usage unavailable:", type(e).__name__)
         push_msg(usage_snapshot())
+        push_raw(todo_line(todos.snapshot()))
         time.sleep(30)
 
 def watcher_loop():
@@ -3068,6 +3076,7 @@ def handle_board_msg(raw, reply):
             reply(hostinfo_msg())
         reply(time_msg())
         reply((json.dumps(usage_snapshot()) + "\n").encode())
+        reply(todo_line(todos.snapshot()))
         reply((json.dumps(report_msg()) + "\n").encode())
         reply((json.dumps(cfg_msg()) + "\n").encode())
         reply(sess_line())               # the session row: a rebooted board knows none
@@ -3077,6 +3086,8 @@ def handle_board_msg(raw, reply):
             with np_lock:
                 np_rt["msg"] = np_now
                 np_rt["sent_at"] = time.time()
+    elif t == "todo_action":
+        todo_action(m)
     elif t == "sess_sel":                # board tapped a half of the session row
         sess_pick(m.get("id"))
     elif t == "media":                   # play page, Mac source: pet -> the Mac's player
@@ -6577,6 +6588,12 @@ SETTINGS_T = {
   "page_pickup": "拿起时显示", "pdesc_pickup": "把板子拿起来那一刻显示哪一页。",
   "page_behavior": "行为", "pdesc_behavior": "板子与 Mac 前台互相跟随的规则。",
   "page_np": "正在播放", "pdesc_np": "把 Mac 正在播的东西显示在板上。",
+  "page_todo": "待办", "pdesc_todo": "在 Mac 安排，在桌面小屏上一件件完成。",
+  "td_heading": "一件一件，完成。", "td_left": "尚待完成", "td_add": "添加任务", "td_ph": "下一件想完成的事…",
+  "td_done": "已完成", "td_empty": "今天的空间，留给重要的事。", "td_hint": "最多 16 条，每条 48 字。常用简体中文和英文无需 SD 卡；生僻字和 emoji 可能显示为问号。",
+  "td_edit": "编辑任务", "td_remove": "移除任务", "td_star": "置顶", "td_unstar": "取消置顶", "td_undo": "撤销操作",
+  "td_save": "保存", "td_cancel": "取消", "td_local": "保存在这台 Mac", "td_error": "连接失败，请重试。",
+  "td_board": "按键朝右进入待办；上下滑动浏览，点圆圈完成，点正文查看详情和专注。",
   "page_usage": "Codex 用量", "pdesc_usage": "账户额度、本机今日 Token 与账户本周 Token。",
   "usage_today": "今日 · 本机 Token", "usage_week": "本周 · 账户 Token", "usage_note": "今日：本机 Codex 桌面端响应日志，按北京时间统计，含缓存输入，按响应 ID 去重，每 30 秒刷新；不含其他设备及未记录的调用。本周：官方账户每日分桶，沿用服务端日期，周一起，可能延迟，每 5 分钟刷新。两者口径不同。重置时间为北京时间。宠物页：按键朝上立放；侧放显示时钟／用量，working 不会自动切页。",
   "usage_wait": "暂不可用", "usage_left": "剩余", "usage_reset": "重置", "usage_stale": "额度数据已过期", "usage_live": "额度已同步",
@@ -6700,6 +6717,12 @@ SETTINGS_T = {
   "page_pickup": "Pickup", "pdesc_pickup": "Which page the board shows the moment you pick it up.",
   "page_behavior": "Behavior", "pdesc_behavior": "How the board and the Mac's front app follow each other.",
   "page_np": "Now Playing", "pdesc_np": "Show what the Mac is playing on the board.",
+  "page_todo": "Tasks", "pdesc_todo": "Plan on your Mac. Finish one thing at a time on your desk.",
+  "td_heading": "One thing at a time.", "td_left": "TASKS LEFT", "td_add": "Add task", "td_ph": "What comes next?",
+  "td_done": "Completed", "td_empty": "Make room for what matters.", "td_hint": "Up to 16 tasks, 48 characters each. Common Simplified Chinese and English work without an SD card; rare characters and emoji may appear as question marks.",
+  "td_edit": "Edit task", "td_remove": "Remove task", "td_star": "Pin to top", "td_unstar": "Unpin", "td_undo": "Undo change",
+  "td_save": "Save", "td_cancel": "Cancel", "td_local": "Saved on this Mac", "td_error": "Connection failed. Please retry.",
+  "td_board": "Keys-right opens Tasks. Swipe vertically to browse, tap a circle to complete, or tap the title for details and focus.",
   "page_usage": "Codex usage", "pdesc_usage": "Account quota, local today and account weekly tokens.",
   "usage_today": "Today · this Mac", "usage_week": "Week · account", "usage_note": "Today: local Codex desktop response logs in UTC+8, cached input included, deduplicated by response ID; every 30 seconds. Other devices and unrecorded calls are excluded. Week: official account buckets using service dates, Monday start; may lag, every 5 minutes. These scopes differ. Reset: UTC+8. Pet: stand the board keys-up; working does not override side pages.",
   "usage_wait": "Unavailable", "usage_left": "remaining", "usage_reset": "reset", "usage_stale": "Quota data is stale", "usage_live": "Quota synced",
@@ -6941,6 +6964,7 @@ pre{background:#0d0d0d;border-top:1px solid rgba(255,255,255,.07);padding:10px 1
 /* footer + toast */
 footer{flex:none;display:flex;align-items:center;gap:12px;padding:14px 40px;border-top:1px solid rgba(255,255,255,.07);background:#0d0d0d}
 footer .sp{flex:1}
+body:has(.page[data-page="todo"].on) footer{display:none}
 #savehint{font-size:12px;color:rgba(255,255,255,.40)}
 #toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:#2c2c2e;border:1px solid rgba(255,255,255,.12);
  padding:9px 18px;border-radius:10px;opacity:0;transition:.3s;font-size:13px;max-width:70vw;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.6)}
@@ -6974,6 +6998,28 @@ footer .sp{flex:1}
 .usage-foot{margin-top:28px;color:#9298a2;font-size:14px}
 .usage-panel+.cap{max-width:640px}
 
+
+/* A quiet task surface, sharing the device's black / white / Plex / violet. */
+.todo-panel{max-width:680px;background:#000;border:1px solid #202328;border-radius:20px;padding:28px;font-family:UsagePlex,"PingFang SC",sans-serif}
+.todo-eyebrow{display:flex;justify-content:space-between;color:#9298a2;font-size:12px;letter-spacing:2px}
+.todo-eyebrow span{color:#a0a6ff}.todo-intro{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:30px 0 25px}
+.todo-intro h2{font-size:27px;font-weight:600;letter-spacing:-.6px;margin:0 0 12px}.todo-intro p{color:#9298a2;font-size:12px;margin:0}
+.todo-count{text-align:right;flex:none}.todo-count b{display:block;font-size:70px;line-height:1;font-weight:700;letter-spacing:-4px;font-variant-numeric:tabular-nums}.todo-count small{display:block;color:#9298a2;margin-top:10px;font-size:11px}
+.todo-progress{height:3px;background:#303238;margin-bottom:28px;border-radius:3px;overflow:hidden}.todo-progress i{display:block;height:100%;background:#6f78ff;transition:width .3s}
+.todo-add{display:flex;gap:10px}.todo-add input{width:100%;min-width:0;flex:1;height:46px;font-family:inherit;font-size:14px;background:#121419;border-color:#292b33;border-radius:12px}
+.todo-add button,.todo-dialog-actions button:last-child{background:#6f78ff;color:#fff;border-radius:12px;min-height:46px}.todo-add button:hover{background:#8189ff}
+.todo-list{margin-top:12px}.todo-row{display:flex;align-items:center;gap:12px;min-height:80px;border-bottom:1px solid #202328;transition:opacity .22s,transform .22s;background:#000}
+.todo-row:focus-within{background:#101116}.todo-check{flex:none;width:44px;height:44px;padding:0;background:transparent;border-radius:50%;display:grid;place-items:center}.todo-check:before{content:'';width:20px;height:20px;border:1.5px solid #707684;border-radius:50%}.todo-check:hover{background:#1c1e28}
+.todo-row.is-done .todo-check:before{content:'✓';display:grid;place-items:center;background:#6f78ff;border-color:#6f78ff;color:#fff;font-size:14px}.todo-row.is-done .todo-text{text-decoration:line-through;color:#9298a2}
+.todo-text{background:transparent;flex:1;min-width:0;padding:14px 0;text-align:left;white-space:normal;overflow-wrap:anywhere;font:500 16px/1.7 UsagePlex,"PingFang SC",sans-serif}.todo-text:hover{background:transparent;color:#bdc0ff}
+.todo-star{flex:none;width:40px;height:40px;padding:0;background:transparent;color:#6a6d79;font-size:22px}.todo-star.on{color:#9da3ff}.todo-star:hover{background:#151720}
+.todo-bottom{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:28px;min-height:36px;color:#9298a2;font-size:11px}.todo-bottom button{color:#b7bbff;background:#1b1d30}
+.todo-error{color:#ff9f91;font-size:13px;line-height:1.6;min-height:0;margin:10px 0}.todo-error:empty{display:none}.todo-empty{padding:48px 0;text-align:center;color:#9298a2;font-size:15px}
+#todoCompleted{margin-top:25px;color:#9298a2;font-size:13px}#todoCompleted summary{cursor:pointer;padding:8px 0}#todoCompleted .todo-row{min-height:64px}
+#todoDialog{background:#121419;color:#fff;border:1px solid #303238;border-radius:20px;padding:28px;width:min(480px,90vw)}#todoDialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(5px)}#todoDialog h2{margin:0 0 22px;font-size:22px}#todoEditTitle{width:100%;height:48px;font:16px "PingFang SC",sans-serif}.todo-dialog-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:24px}#todoRemove{margin-right:auto;color:#ff9f91}
+.todo-panel button:focus-visible,#todoDialog button:focus-visible{outline:2px solid #a0a6ff;outline-offset:3px}.todo-panel [hidden]{display:none!important}
+@media(max-width:650px){.todo-panel{padding:20px}.todo-intro{gap:12px}.todo-intro h2{font-size:22px}.todo-count b{font-size:58px}.todo-add{flex-wrap:wrap}.todo-add button{width:100%}}
+@media(prefers-reduced-motion:reduce){.todo-panel *{transition:none!important}}
 </style></head><body>
 <aside>
  <div class="brand"><div class="lg"><svg width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="7.5" cy="10" r="3" fill="#fff"/><circle cx="14.5" cy="10" r="3" fill="#fff"/></svg></div>
@@ -7057,7 +7103,7 @@ footer .sp{flex:1}
  <div class="page" data-page="pickup">
   <section><div class="grp">
    <div class="row"><div class="lab"><span data-t="pk_t"></span><small data-t="pk_sub"></small></div>
-    <div class="seg" id="pk"><label><input type="radio" name="pk" value="follow"><span>follow</span></label><label><input type="radio" name="pk" value="face"><span>face</span></label><label><input type="radio" name="pk" value="clock"><span>clock</span></label><label><input type="radio" name="pk" value="almanac"><span>calendar</span></label><label><input type="radio" name="pk" value="smart"><span>smart</span></label></div></div>
+    <div class="seg" id="pk"><label><input type="radio" name="pk" value="follow"><span>follow</span></label><label><input type="radio" name="pk" value="face"><span>face</span></label><label><input type="radio" name="pk" value="clock"><span>clock</span></label><label><input type="radio" name="pk" value="almanac"><span>todo</span></label><label><input type="radio" name="pk" value="smart"><span>smart</span></label></div></div>
   </div></section>
  </div>
 
@@ -7075,6 +7121,22 @@ footer .sp{flex:1}
   <section><div class="grp">
    <div class="row"><div class="lab"><span data-t="np_t"></span><small data-t="np_sub"></small></div><label class="tg"><input type="checkbox" id="np"><span class="k"></span></label></div>
   </div></section>
+ </div>
+
+ <div class="page" data-page="todo">
+  <div class="todo-panel">
+   <div class="todo-eyebrow"><span>TODAY</span><time id="todoDate"></time></div>
+   <div class="todo-intro"><div><h2 data-t="td_heading"></h2><p data-t="td_local"></p></div><div class="todo-count"><b id="todoCount">00</b><small data-t="td_left"></small></div></div>
+   <div class="todo-progress"><i id="todoProgress"></i></div>
+   <form id="todoAdd" class="todo-add"><input id="todoTitle" type="text" maxlength="48" required data-tp="td_ph" data-ta="td_add" autocomplete="off"><button type="submit" data-t="td_add"></button></form>
+   <p id="todoError" role="alert" class="todo-error"></p>
+   <div id="todoList" class="todo-list"></div>
+   <p id="todoEmpty" class="todo-empty" data-t="td_empty"></p>
+   <details id="todoCompleted"><summary><span data-t="td_done"></span> <span id="todoDoneCount"></span></summary><div id="todoDoneList" class="todo-list"></div></details>
+   <div class="todo-bottom"><span id="todoSaved" role="status" data-t="td_local"></span><button id="todoUndo" type="button" onclick="todoSend({op:'undo'})" data-t="td_undo" hidden></button></div>
+  </div>
+  <p class="cap" data-t="td_board"></p><p class="cap" data-t="td_hint"></p>
+  <dialog id="todoDialog"><form id="todoEditForm"><h2 data-t="td_edit"></h2><input id="todoEditTitle" maxlength="48" required type="text" data-ta="td_edit"><div class="todo-dialog-actions"><button id="todoRemove" type="button" data-t="td_remove"></button><button type="button" onclick="$('#todoDialog').close()" data-t="td_cancel"></button><button type="submit" data-t="td_save"></button></div></form></dialog>
  </div>
 
  <div class="page" data-page="usage">
@@ -7139,6 +7201,7 @@ const stNm=s=>(('st_'+s) in T.zh)?t('st_'+s):s;
 const SEATCOL={claude:'#FF6B5A',codex:'#5096FF',qoder:'#3DDC84',qoderwork:'#A778FF',forest:'#F2A33C'};  // firmware config.h AGENTS[]
 const KEYFIELDS=['focus_keys','approve_keys','reject_keys'];
 const ICON={
+ todo:'<rect x="2" y="2" width="12" height="12" rx="3"/><path d="m5 8 2 2 4-4"/>',
  overview:'<circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 2"/>',
  seats:'<circle cx="5" cy="6" r="2.2"/><circle cx="11" cy="6" r="2.2"/><path d="M1.5 13c.6-2.2 2-3.2 3.5-3.2s2.9 1 3.5 3.2M7.5 13c.6-2.2 2-3.2 3.5-3.2s2.9 1 3.5 3.2"/>',
  sound:'<path d="M2 6h2.5L8 3v10L4.5 10H2z"/><path d="M10.5 5.5a3.5 3.5 0 010 5M12.5 3.5a6 6 0 010 9"/>',
@@ -7150,7 +7213,8 @@ const ICON={
  wifi:'<path d="M1.5 6a9.5 9.5 0 0113 0M3.8 8.4a6.3 6.3 0 018.4 0M6 10.8a3.2 3.2 0 014 0"/><circle cx="8" cy="13" r=".8" fill="currentColor"/>',
  host:'<rect x="2" y="3" width="12" height="5" rx="1.5"/><rect x="2" y="9" width="12" height="4" rx="1.5"/><circle cx="4.5" cy="5.5" r=".7" fill="currentColor"/><circle cx="4.5" cy="11" r=".7" fill="currentColor"/>'};
 // page ids; titles and one-liners are T keys page_<id> / pdesc_<id>
-const PAGES=['overview','wifi','seats','sound','mic','pickup','behavior','np','usage','host'];
+let todoData=null,todoSending=false,todoEditId=null,todoEditRev=0,todoRenderedRev=-1;
+const PAGES=['overview','wifi','seats','sound','mic','pickup','behavior','np','todo','usage','host'];
 function toast(t){const e=$('#toast');e.textContent=t;e.style.opacity=1;
  clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.opacity=0,1800)}
 function hit(p){fetch(API+p).then(r=>r.text()).then(t=>toast(t.slice(0,60)))}
@@ -7165,7 +7229,8 @@ function route(){let h=(location.hash||'#overview').slice(1);
  document.querySelectorAll('.page').forEach(e=>e.className='page'+(e.dataset.page===p?' on':''));
  $('#hd_t').textContent=t('page_'+p);$('#hd_d').textContent=t('pdesc_'+p);
  if(p==='wifi')wfLoad();
- if(p==='seats')scLoad()}
+ if(p==='seats')scLoad();
+ if(p==='todo')todoLoad()}
 buildNav();window.addEventListener('hashchange',()=>{route();$('.content').scrollTop=0});route();
 // ---- language: repaint every marked node in place; typed-in values survive ----
 let lastD=null;
@@ -7178,7 +7243,7 @@ function applyLang(){
  document.querySelectorAll('[name=lang]').forEach(r=>r.checked=r.value===L);
  document.querySelectorAll('.seat[data-a] .lab>span:first-child').forEach(e=>e.textContent=seatNm(e.closest('.seat').dataset.a));
  document.querySelectorAll('[data-k="focus_apps"]').forEach(mirrorApp);
- route();if(lastD)status(lastD);usageTick();memTick()}
+ todoRenderedRev=-1;route();if(lastD)status(lastD);usageTick();memTick()}
 document.querySelectorAll('[name=lang]').forEach(r=>r.onchange=()=>{
  const v=r.value;if(v===L)return;L=v;applyLang();
  fetch(API+'/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -7191,6 +7256,7 @@ function touch(){const b=$('#save');b.disabled=false;b.className='pri';tx($('#sa
 function clean(){const b=$('#save');b.disabled=true;b.className='';const h=$('#savehint');delete h.dataset.t;h.textContent=''}
 function onEdit(e){const t=e.target;
  if(!t.matches||!t.matches('input,select,textarea'))return;
+ if(t.closest('.page[data-page="todo"]'))return;
  if(['vol','logn','sayt','au','aun','wfs','wfp'].indexOf(t.id)>=0)return;  // board NVS / log / one-shot boxes
  if(t.name==='pk'||t.name==='lang')return;                     // written on click
  if(t.dataset.k==='focus_apps')mirrorApp(t);
@@ -7438,6 +7504,44 @@ function wfAdd(){const s=$('#wfs').value.trim(),p=$('#wfp').value;if(!s)return;
 function wfRm(s){if(!confirm(tf('wf_rm_q',s)))return;
  wfPost({op:'rm',ssid:s}).then(d=>{toast(d.ok?t('wf_rmd'):wfWhy(d.why));if(d.nets)wfPaint(d)})}
 function esc(s){const d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML}
+// ---- local tasks: shared with the board; no conversation data leaves this Mac ----
+function todoRender(d){
+ $('#todoDate').textContent=d.date;$('#todoCount').textContent=String(d.items.filter(i=>!i.done).length).padStart(2,'0');
+ $('#todoProgress').style.width=(d.items.length?100*d.items.filter(i=>i.done).length/d.items.length:0)+'%';
+ $('#todoUndo').hidden=!d.undo;$('#todoError').textContent=d.error||'';
+ if(todoRenderedRev===d.rev)return;todoRenderedRev=d.rev;
+ $('#todoList').replaceChildren();$('#todoDoneList').replaceChildren();
+ const items=d.items.slice().sort((a,b)=>Number(b.important)-Number(a.important));
+ items.forEach(item=>{
+  const row=document.createElement('div');row.className='todo-row'+(item.done?' is-done':'');row.dataset.id=item.id;
+  const check=document.createElement('button');check.type='button';check.className='todo-check';check.setAttribute('role','checkbox');check.setAttribute('aria-checked',String(item.done));check.setAttribute('aria-label',(item.done?t('td_done'):t('td_left'))+' '+item.title);check.onclick=()=>todoSend({op:'set',id:item.id,done:!item.done});
+  const title=document.createElement('button');title.type='button';title.className='todo-text';title.textContent=item.title;title.setAttribute('aria-label',t('td_edit')+' '+item.title);title.onclick=()=>todoEdit(item);
+  const star=document.createElement('button');star.type='button';star.className='todo-star'+(item.important?' on':'');star.textContent=item.important?'★':'☆';star.setAttribute('aria-pressed',String(item.important));star.setAttribute('aria-label',item.important?t('td_unstar'):t('td_star'));star.onclick=()=>todoSend({op:'set',id:item.id,important:!item.important});
+  row.append(check,title,star);$(item.done?'#todoDoneList':'#todoList').appendChild(row);
+ });
+ const done=d.items.filter(i=>i.done).length;$('#todoCompleted').hidden=!done;$('#todoDoneCount').textContent=done;
+ $('#todoEmpty').hidden=d.items.some(i=>!i.done);
+}
+async function todoLoad(){
+ if(todoSending)return;
+ try{const r=await fetch(API+'/todo');if(!r.ok)throw Error();todoData=await r.json();todoRender(todoData)}
+ catch(e){$('#todoError').textContent=t('td_error')}
+}
+async function todoSend(change,rev){
+ if(todoSending||!todoData)return false;todoSending=true;
+ try{
+  const r=await fetch(API+'/todo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({rev:rev==null?todoData.rev:rev},change))});
+  if(!r.ok)throw Error();const d=await r.json();todoData=d;
+  if(d.ok&&change.done&&change.id){const row=$('.todo-row[data-id="'+change.id+'"]');if(row)row.classList.add('is-done');await new Promise(resolve=>setTimeout(resolve,240))}
+  todoRender(d);if(d.ok)$('#todoSaved').textContent=t('td_local');return d.ok;
+ }catch(e){$('#todoError').textContent=t('td_error');return false}
+ finally{todoSending=false}
+}
+function todoEdit(item){todoEditId=item.id;todoEditRev=todoData.rev;$('#todoEditTitle').value=item.title;$('#todoDialog').showModal();$('#todoEditTitle').focus()}
+$('#todoAdd').onsubmit=async e=>{e.preventDefault();if(await todoSend({op:'add',title:$('#todoTitle').value}))$('#todoTitle').value=''};
+$('#todoEditForm').onsubmit=async e=>{e.preventDefault();if(await todoSend({op:'set',id:todoEditId,title:$('#todoEditTitle').value},todoEditRev))$('#todoDialog').close()};
+$('#todoRemove').onclick=async()=>{if(await todoSend({op:'remove',id:todoEditId},todoEditRev))$('#todoDialog').close()};
+setInterval(()=>{if(location.hash==='#todo')todoLoad()},2000);
 function usageTick(){fetch(API+'/usage').then(r=>r.json()).then(d=>{
  const fmt=n=>n==null?t('usage_pending'):n.toLocaleString(L==='zh'?'zh-CN':'en-US');
  $('#usageToday').textContent=fmt(d.today);$('#usageWeek').textContent=fmt(d.week);
@@ -7703,7 +7807,12 @@ class HookHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/settings":
+        if self.path == '/todo':
+            if self.headers.get('Host') not in ('127.0.0.1:8788', 'localhost:8788'):
+                self.send_error(403)
+                return
+            self._ok(todo_line(todos.snapshot()))
+        elif self.path == "/settings":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -7859,7 +7968,7 @@ class HookHandler(BaseHTTPRequestHandler):
             # /test/view/<play|clock|report|face|almanac|calendar>[?s=20] — force a page for s seconds
             q = dict(parse_qsl(self.path.split("?", 1)[1], keep_blank_values=True)) if "?" in self.path else {}
             p = self.path.split("?", 1)[0].rsplit("/", 1)[1]
-            if p not in ("np", "usage", "play", "clock", "face", "calendar"):
+            if p not in ("np", "usage", "play", "clock", "face", "calendar", "todo"):
                 self._ok(json.dumps({"ok": False, "why": "unknown page %r" % p}).encode())
                 return
             secs = int(np_num(q.get("s", 20), 20))
@@ -8288,6 +8397,23 @@ class HookHandler(BaseHTTPRequestHandler):
             self._ok(b"agentpet")
 
     def do_POST(self):
+        if self.path == '/todo':
+            if (self.headers.get('Host') not in ('127.0.0.1:8788', 'localhost:8788') or
+                    self.headers.get('Origin', 'http://127.0.0.1:8788') not in
+                    ('http://127.0.0.1:8788', 'http://localhost:8788') or
+                    self.headers.get_content_type() != 'application/json'):
+                self.send_error(403)
+                return
+            try:
+                size = int(self.headers.get('Content-Length', 0))
+                if not 0 < size <= 2048:
+                    raise ValueError()
+                command = json.loads(self.rfile.read(size))
+            except (ValueError, TypeError):
+                self.send_error(400)
+                return
+            self._ok(todo_line(todo_action(command)))
+            return
         n = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(n) if n else b"{}"
         try:
