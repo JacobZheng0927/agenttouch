@@ -661,6 +661,17 @@ static void pageXY(int x, int y, int& px, int& py) {
   }
 }
 
+// Task hit targets use the inverse of Arduino_Canvas::writePixelPreclipped.
+// The legacy pageXY odd rotations mirror x, which swaps the task buttons.
+static void todoPageXY(int x, int y, int& px, int& py) {
+  switch ((4 - shownRot) & 3) {
+    case 1:  px = y;       py = 479 - x; break;
+    case 2:  px = 479 - x; py = 479 - y; break;
+    case 3:  px = 479 - y; py = x;       break;
+    default: px = x;       py = y;       break;
+  }
+}
+
 // ---- microphone streaming (mic-blackhole branch) ----
 // The mic task (audio.cpp) fills a ring of IMA ADPCM frames; they leave as
 // {"t":"mic","seq","p","d"} lines (25/s × ~470 B) on one of two links, picked
@@ -2871,10 +2882,11 @@ static void touchPoll() {
         if (!half) lastTapAt = nowMs;
       }
     } else if (shownPage == PAGE_CALENDAR) {
-      int px, py;
-      pageXY(tpLastX, tpLastY, px, py);
+      int px, py, sx, sy;
+      todoPageXY(tpLastX, tpLastY, px, py);
+      todoPageXY(tpStartX, tpStartY, sx, sy);
       JsonDocument command;
-      if (todoTouch(command, px, py, vdx, vdy)) sendJson(command);
+      if (todoTouch(command, px, py, px - sx, py - sy)) sendJson(command);
       noteActivity();
     } else if (shownPage == PAGE_CLOCK && clockView == CV_NP && vv) {
       // 播放页 up/down = volume ±10, like the face page; the toast is the
