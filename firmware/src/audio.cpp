@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <ESP_I2S.h>
+#include <driver/i2s_std.h>
 #include <Preferences.h>
 #include <math.h>
 #include "pins.h"
@@ -28,6 +29,9 @@ static Preferences    prefs;
 static uint8_t        s_volume  = SOUND_VOLUME;   // 0..100, NVS-backed
 static uint8_t        s_preMute = SOUND_VOLUME;   // restored by unmute
 static bool           s_suppress = false;         // face-down hush
+static SemaphoreHandle_t s_ioMutex = nullptr;
+static volatile bool s_clocksOn = false;
+static bool audioClocks(bool on);
 
 // The i2s driver allocates its channel context with MALLOC_CAP_DEFAULT, which
 // lands in PSRAM on this heap layout; GDMA_ISR_IRAM_SAFE then rejects it as
@@ -388,7 +392,8 @@ static void audioTask(void*) {
   uint8_t id;
   bool paOn = false;
   for (;;) {
-    if (!xQueueReceive(sndQ, &id, portMAX_DELAY)) continue;
+    if (!xQueueReceive(sndQ, &id, pdMS_TO_TICKS(100))) { audioClocks(false); continue; }
+    if (!audioClocks(true)) continue;
     if (!paOn) {
       digitalWrite(PIN_PA_CTRL, HIGH);   // PA on only while playing (no idle hiss)
       paOn = true; s_paOn = true;
@@ -438,7 +443,7 @@ static portMUX_TYPE s_micMux = portMUX_INITIALIZER_UNLOCKED;
 // quality (no peak on the search edge, normalized peak ≥ minConf) and by
 // the board's own speaker (it must not stare at itself). ~4.4k MACs per
 // 40 ms frame on the mic task, nothing on the loop.
-static volatile bool s_gazeOn  = true;
+static volatile bool s_gazeOn  = false;
 static volatile bool s_gazeDbg = false;
 static int      s_gazeMinRms   = 150;            // frame RMS gate, 16-bit units
 static float    s_gazeFloor    = 0;              // slow EMA of frame RMS (room noise)
@@ -569,7 +574,11 @@ static inline uint8_t imaEncode(int16_t s) {
 static void micTask(void*) {
   static int16_t rx[MIC_SAMPLES * 2];            // interleaved L/R, 2560 B
   for (;;) {
+    if (!s_clocksOn || (!s_gazeOn && !s_micOn)) { delay(20); continue; }
+    xSemaphoreTake(s_ioMutex, portMAX_DELAY);
+    if (!s_clocksOn || (!s_gazeOn && !s_micOn)) { xSemaphoreGive(s_ioMutex); continue; }
     size_t got = i2s.readBytes((char*)rx, sizeof(rx));   // blocks on DMA; keeps it drained
+    xSemaphoreGive(s_ioMutex);
     if (got != sizeof(rx)) { delay(1); continue; }
     if (s_gazeOn) gazeFeed(rx, millis());        // 眼神追声 listens whether or not we stream
     if (!s_micOn) continue;
@@ -623,6 +632,7 @@ void audioMicStart() {
   s_micSeq = 0; s_encPred = 0; s_encIdx = 0;
   s_micSkip = 2;                                 // whatever DMA buffered before the press
   s_micOn = true;
+  if (!audioClocks(true)) s_micOn = false;
 }
 
 void audioMicStop() { s_micOn = false; }
@@ -650,7 +660,7 @@ int audioGazeHist(GazeSample* out, int max) {
   }
   return n;
 }
-void    audioGazeEnable(bool on)  { s_gazeOn = on; }
+void    audioGazeEnable(bool on)  { s_gazeOn = on; if (on && ready) audioClocks(true); }
 bool    audioGazeEnabled()        { return s_gazeOn; }
 void    audioGazeTune(int minRms, float minConf) {
   if (minRms >= 0) s_gazeMinRms = minRms;
@@ -674,6 +684,56 @@ void    audioGazeDebug(bool)      {}
 #endif
 
 // ------------------------------------------------------------------ api
+// Serialize channel suspension with the mic read; channel handles stay allocated.
+static bool audioClocks(bool on) {
+  if (!s_ioMutex) return false;
+  xSemaphoreTake(s_ioMutex, portMAX_DELAY);
+  if (!on && (audioMicActive() || audioGazeEnabled() || s_paOn || uxQueueMessagesWaiting(sndQ))) {
+    xSemaphoreGive(s_ioMutex); return false;
+  }
+  bool ok = true;
+  if (on != s_clocksOn) {
+    if (on) {
+      ok = i2s_channel_enable(i2s.txChan()) == ESP_OK;
+      if (i2s.rxChan()) ok = (i2s_channel_enable(i2s.rxChan()) == ESP_OK) && ok;
+      ok = codecInit() && ok;
+#if MIC_ENABLED
+      if (s_micReady) ok = micCodecInit() && ok;
+#endif
+      if (!ok) {
+        if (i2s.rxChan()) i2s_channel_disable(i2s.rxChan());
+        i2s_channel_disable(i2s.txChan());
+      }
+    } else {
+      // Espressif esp_codec_dev ES8311 suspend / ES7210 stop sequences.
+      const uint8_t regs[][2] = {{0x32,0},{0x17,0},{0x0E,0xFF},{0x12,2},{0x14,0},
+        {0x0D,0xFA},{0x15,0},{0x02,0x10},{0,0},{0,0x1F},{1,0x30},{1,0},
+        {0x45,0},{0x0D,0xFC},{2,0}};
+      for (auto& r : regs) wr(r[0], r[1]);
+#if MIC_ENABLED
+      if (s_micReady) {
+        for (uint8_t r = 0x47; r <= 0x4C; r++) micWr(r, 0xFF);
+        micWr(0x40, 0xC0); micWr(1, 0x7F); micWr(6, 7);
+      }
+#endif
+      if (i2s.rxChan()) i2s_channel_disable(i2s.rxChan());
+      i2s_channel_disable(i2s.txChan());
+    }
+    s_clocksOn = on && ok;
+  }
+  xSemaphoreGive(s_ioMutex);
+  return ok;
+}
+
+bool audioHardwareAwake() { return s_clocksOn; }
+bool audioPrepareSleep() {
+  audioSuppress(true); audioMicStop(); audioGazeEnable(false);
+  if (!ready) return true;
+  if (audioOutputActive()) return false;
+  audioClocks(false);
+  return !s_clocksOn;
+}
+
 bool audioInit() {
 #if !SOUND_ENABLED
   return false;
@@ -698,17 +758,21 @@ bool audioInit() {
     Serial.println("audio: i2s begin FAILED");
     return false;
   }
+  i2s.setTimeout(60);
+  s_ioMutex = xSemaphoreCreateMutex();
+  if (!s_ioMutex) return false;
+  s_clocksOn = true;
   if (!codecInit()) {
     Serial.println("audio: es8311 not responding");
     return false;
   }
   sndQ = xQueueCreate(6, 1);
-  xTaskCreatePinnedToCore(audioTask, "audio", 8192, nullptr, 1, nullptr, 0);   // +SD reads: the player streams from the card on this task
   ready = true;
   Serial.println("audio: up");
 #if MIC_ENABLED
   micInit();
 #endif
+  xTaskCreatePinnedToCore(audioTask, "audio", 8192, nullptr, 1, nullptr, 0);   // +SD reads: the player streams from the card on this task
   return true;
 }
 

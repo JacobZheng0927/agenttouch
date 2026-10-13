@@ -30,6 +30,10 @@ When a Mac asks to become the board's owner, the face page shows a "Connect to t
 
 Higher rows win. Face-down sleep sits above all of them: the screen is off and nothing below applies.
 
+The Codex fork also has scheduled deep sleep from 20:00 to 09:00, above all
+screen requests. See [power saving](07-codex-only.md#power-saving-and-scheduled-sleep-v16)
+for automatic morning wake and the temporary IO18 wake at night.
+
 | # | Source | Screen shows |
 |---|---|---|
 | 1 | Claim card | Face page with the card |

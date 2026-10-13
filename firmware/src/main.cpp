@@ -26,6 +26,7 @@
 #include "sdcard.h"
 #include "sdfont.h"
 #include "boardrtc.h"
+#include "power_policy.h"
 #include "player.h"
 #include "jpegrom.h"
 #include "i18n.h"
@@ -36,6 +37,9 @@
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
+#include <esp_sleep.h>
+#include <driver/rtc_io.h>
+#include <NimBLEDevice.h>
 
 // ---------- task watchdog ----------
 // Added 2026-09-19 alongside an attempt to make the middle (PWRON) key the
@@ -263,7 +267,12 @@ static uint8_t  shownPage = PAGE_FACE;
 static uint8_t  shownRot  = 0;
 static uint32_t lastActive = 0;
 static uint8_t  curBright  = BRIGHT_FULL;
-static void noteActivity() { lastActive = millis(); }
+static bool screenDirty = true;
+static uint32_t paintFrames = 0;
+static RTC_DATA_ATTR uint32_t nightAwakeUntil = 0;
+static uint32_t testSleepAt = 0, testSleepSeconds = 0;
+static bool powerSleep(uint32_t seconds, bool scheduled = false);
+static void noteActivity() { lastActive = millis(); screenDirty = true; }
 
 // 钉住 on/off, from the corner pin or the host (/test/pin). Persisted right
 // away so a power cycle keeps the lock.
@@ -1273,6 +1282,7 @@ static int      wifiN = 0;
 static int16_t  wifiSeen[WIFI_NETS_MAX + 1];   // last scan's RSSI per net (last slot = factory), 0 = not seen
 static bool     wifiScanning = false;
 static uint32_t wifiScanAt = 0;                // when the last scan started
+static uint32_t wifiManualUntil = 0;
 static int      wifiReplyId = -1;              // a list reply owed once the scan lands (-1 = none)
 // What the last scan saw, strongest first (the page offers these as one-tap
 // names: proves the board can hear it, i.e. it is 2.4 GHz and in range).
@@ -1309,7 +1319,7 @@ static void wifiSave() {
 // Kick off an async scan; wifiPoll() finishes it. Harmless while one runs.
 static void wifiStartScan() {
   if (wifiScanning) return;
-  if (WiFi.getMode() == WIFI_OFF) WiFi.mode(WIFI_STA);
+  if (WiFi.getMode() == WIFI_OFF) { WiFi.mode(WIFI_STA); WiFi.setSleep(true); }
   wifiScanAt = millis();               // also on failure: retry in 30 s, not every pass
   if (WiFi.scanNetworks(true, false, false, 120) == WIFI_SCAN_FAILED) return;
   wifiScanning = true;
@@ -1339,6 +1349,7 @@ static void wifiReply(int id, bool ok, const char* why) {
 }
 
 static void wifiHandle(JsonDocument& d) {
+  wifiManualUntil = millis() + 120000; // explicit Wi-Fi setup gets a two-minute window
   const char* op = d["op"] | "list";
   int id = d["id"] | 0;
   String sid = d["s"] | "";
@@ -1556,6 +1567,19 @@ static void ownerHandle(JsonDocument& d, bool claim) {
   ownerReply(r);
 }
 
+static void addPowerStatus(JsonDocument& d) {
+  JsonObject p = d["power"].to<JsonObject>();
+  p["night"] = "20:00-09:00";
+  p["sleep_s"] = nightSleepSeconds(clockEpoch(), nightAwakeUntil);
+  p["awake_until"] = nightAwakeUntil;
+  p["bright"] = curBright; p["usb"] = usbPowered;
+  p["wifi_off"] = WiFi.getMode() == WIFI_OFF;
+  p["audio_awake"] = audioHardwareAwake(); p["mic"] = audioMicActive();
+  p["frames"] = paintFrames; p["up_ms"] = millis();
+  p["wake"] = (int)esp_sleep_get_wakeup_cause();
+  p["wake_pins"] = esp_sleep_get_ext1_wakeup_status();
+}
+
 static void handleLine(const String& line) {
   bool visitor = curBleLink != BLE_NO_LINK && !bleIsTrusted(curBleLink);
   if (line.startsWith("{\"t\": \"fdat\"") || line.startsWith("{\"t\":\"fdat\"")) {
@@ -1572,6 +1596,7 @@ static void handleLine(const String& line) {
   }
   if (visitor) return;       // not the owner's link: only hostinfo/claim get through
   lastRx = millis();
+  if (strcmp(t, "pong") && strcmp(t, "power") && strcmp(t, "rtc?")) screenDirty = true;
   if (strcmp(t, "state") == 0) {
     uint8_t prev[N_AGENTS];
     memcpy(prev, agentStates, sizeof(prev));
@@ -1766,6 +1791,7 @@ static void handleLine(const String& line) {
     activitySet(d);
   } else if (strcmp(t, "completed") == 0) {
     completedSet(d);
+    noteActivity();
   } else if (strcmp(t, "todo") == 0) {
     todoSet(d);
   } else if (strcmp(t, "almanac") == 0) {   // daily cyber-almanac from host
@@ -1999,6 +2025,16 @@ static void handleLine(const String& line) {
     int id = d["id"] | 0;
     if (d["rollback"] | false) otaRollback(id);
     else otaRun(id, d["path"] | "", d["size"] | 0u, strtoul(d["crc"] | "0", nullptr, 16));
+  } else if (strcmp(t, "power") == 0) {     // USB diagnostics; bounded real-sleep test
+    JsonDocument r;
+    r["t"] = "power"; r["id"] = d["id"] | 0;
+    int seconds = d["sleep_s"] | 0;
+    bool valid = !d["sleep_s"].isNull() ? d["sleep_s"].is<int>() && seconds >= 5 && seconds <= 60 : true;
+    r["ok"] = valid;
+    if (valid && seconds) { testSleepSeconds = seconds; testSleepAt = millis() + 500; }
+    r["clock"] = clockEpoch();
+    addPowerStatus(r);
+    sendJson(r);
   } else if (strcmp(t, "rtc?") == 0) {      // host asks the hardware clock (/test/rtc)
     const RtcInfo& ri = rtcInfo();
     bool integ = false;
@@ -2008,6 +2044,7 @@ static void handleLine(const String& line) {
     r["chip"] = chip; r["clock"] = clockEpoch(); r["boot"] = ri.bootEpoch;
     r["seeded"] = ri.seeded; r["drift"] = ri.lastDrift;
     r["syncs"] = ri.syncs; r["writes"] = ri.writes; r["up"] = millis() / 1000;
+    addPowerStatus(r);
     sendJson(r);
   } else if (strcmp(t, "cfg") == 0) {       // host-pushed preferences
     if (d["mic_link"].is<const char*>()) {   // dictation link preference: ble (default) | tcp | auto
@@ -2266,6 +2303,31 @@ static void wifiPoll() {
   const int32_t GRACE_MS = 3 * 60000;   // stock retries before first park
   const int32_t PROBE_MS = 20000;       // how long each probe keeps trying
   uint32_t now = millis();
+  static uint32_t bleSince = 0;
+  static bool bleParked = false;
+  bool ble = bleConnected();
+  if (!ble) bleSince = 0;
+  else if (!bleSince) bleSince = now;
+  if (!usbPowered && bleSince && (int32_t)(now - bleSince) >= 60000 &&
+      (int32_t)(wifiManualUntil - now) <= 0) {
+    if (WiFi.getMode() != WIFI_OFF) {
+      sock.stop(); hostUp = false;
+      MDNS.end();
+      if (wifiScanning) { WiFi.scanDelete(); wifiScanning = false; }
+      WiFi.mode(WIFI_OFF);
+      wifiProbeAt = now;
+      Serial.println("power: BLE stable, Wi-Fi off on battery");
+    }
+    wifiParked = bleParked = mdnsRedo = true;
+    return;
+  }
+  if (bleParked && (usbPowered || (int32_t)(wifiManualUntil - now) > 0 ||
+                    (!ble && (int32_t)(now - wifiProbeAt) >= 30000))) {
+    bleParked = wifiParked = false;
+    wifiProbeAt = now;
+    wifiStartScan();
+  }
+  if (bleParked) return;
   if (wifiScanning) {
     int n = WiFi.scanComplete();
     if (n == WIFI_SCAN_RUNNING && (int32_t)(now - wifiScanAt) < 15000) return;
@@ -2349,11 +2411,38 @@ static void wifiPoll() {
       wifiParked = false;
       wifiProbeAt = now;
       WiFi.mode(WIFI_STA);
-      WiFi.setSleep(false);
+      WiFi.setSleep(true);
       wifiStartScan();
       Serial.println("wifi: probing for a known AP");
     }
   }
+}
+
+// Keep RTCLDO alive; the external RTC seeds local time again on wake.
+static bool powerSleep(uint32_t seconds, bool scheduled) {
+  if (!seconds || !pmuOk || listening || audioMicActive() || micWasOn || micBleTaskUp) return false;
+  if (!audioPrepareSleep()) return false;
+  if (digitalRead(PIN_KEY_IO18) == LOW) return false;
+  uint64_t wakePins = 1ULL << PIN_KEY_IO18;
+  if (scheduled && rtcArmMorning()) wakePins |= 1ULL << PIN_RTC_INT;
+  if (esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL) != ESP_OK ||
+      esp_sleep_enable_ext1_wakeup(wakePins, ESP_EXT1_WAKEUP_ANY_LOW) != ESP_OK) return false;
+  Serial.printf("power: deep sleep %lu s; IO18 wakes for 10 min\n", (unsigned long)seconds);
+  gfx->setBrightness(0); gfx->displayOff();
+  if (imuOk) qmi.disableAccelerometer();
+  sock.stop(); MDNS.end(); WiFi.mode(WIFI_OFF);
+  NimBLEDevice::deinit(false); // stop the driver; BLE callbacks are static, not heap-owned
+  pmu.disableALDO3();
+  rtc_gpio_pullup_en((gpio_num_t)PIN_KEY_IO18);
+  rtc_gpio_pulldown_dis((gpio_num_t)PIN_KEY_IO18);
+  if (wakePins & (1ULL << PIN_RTC_INT)) {
+    rtc_gpio_pullup_en((gpio_num_t)PIN_RTC_INT);
+    rtc_gpio_pulldown_dis((gpio_num_t)PIN_RTC_INT);
+  }
+  wdtLeave();
+  Serial.flush();
+  esp_deep_sleep_start();
+  return true;
 }
 
 // Clean power-down: goodbye chirp + closed eyes, then the PMU cuts power.
@@ -3049,6 +3138,16 @@ void setup() {
   // and the almanac on the card work before (or without) a host; host time
   // pushes keep it trimmed (rtcHostSync). Power rail etc.: boardrtc.h.
   rtcInit();
+  rtc_gpio_deinit((gpio_num_t)PIN_KEY_IO18);
+  rtc_gpio_deinit((gpio_num_t)PIN_RTC_INT);
+  pinMode(PIN_KEY_IO18, INPUT_PULLUP);
+  pinMode(PIN_RTC_INT, INPUT_PULLUP);
+  esp_sleep_wakeup_cause_t wake = esp_sleep_get_wakeup_cause();
+  bool keyWake = wake == ESP_SLEEP_WAKEUP_EXT1 &&
+                 (esp_sleep_get_ext1_wakeup_status() & (1ULL << PIN_KEY_IO18));
+  if (keyWake || esp_reset_reason() != ESP_RST_DEEPSLEEP)
+    nightAwakeUntil = nightSleepSeconds(clockEpoch()) ? clockEpoch() + 600 : 0;
+  if (keyWake) bIo18.armed = false; // waking is not dictation
 
   // Buttons
   pinMode(PIN_KEY_PWR, INPUT);         // external inverter drives it
@@ -3075,7 +3174,11 @@ void setup() {
     if (pinnedPage != PAGE_FACE && pinnedPage != PAGE_CLOCK && pinnedPage != PAGE_CALENDAR)
       pinnedPage = PAGE_FACE;
   }
-  gazeOn     = growPrefs.getUChar("gaze", 1) != 0;  // 眼神追声 default on
+  gazeOn     = growPrefs.getUChar("gaze", 0) != 0;
+  if (growPrefs.getUChar("pwrver", 0) < 1) { // migrate once; later explicit gaze choices persist
+    gazeOn = false;
+    growPrefs.putUChar("gaze", 0); growPrefs.putUChar("pwrver", 1);
+  }
   audioGazeEnable(gazeOn);
   voiceTts   = growPrefs.getUChar("vtts", 0) != 0;
   showOffSeats = growPrefs.getUChar("showoff", 0) != 0;   // 离线席位默认隐藏
@@ -3111,7 +3214,7 @@ void setup() {
   // hit exactly when the radio re-associates.
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);                // keep latency low for events
+  WiFi.setSleep(true);
   wifiLoad();
   wifiStartScan();                     // wifiPoll joins the strongest known network
   MDNS.begin("agentpet");
@@ -3119,7 +3222,7 @@ void setup() {
   // Wake-up: chirp + eyes opening together, after connectivity has started
   // (Wi-Fi associates and the Mac's BLE scan land during the animation).
   // The chirp doubles as an audio works-check.
-  if (audioOk) audioPlay(SND_BOOT);
+  if (audioOk && esp_reset_reason() != ESP_RST_DEEPSLEEP) audioPlay(SND_BOOT);
   faceBootAnim(canvas);            // 1.7 s of blocking animation, deliberately
                                    // before the watchdog subscribes
 
@@ -3244,6 +3347,12 @@ void loop() {
   playerPoll();     // metadata after an auto-advance + the 10 s resume write
   imuPoll();
   touchPoll();
+  uint32_t sleepFor = nightSleepSeconds(clockEpoch(), nightAwakeUntil);
+  if (testSleepSeconds) {
+    if ((int32_t)(now - testSleepAt) >= 0) powerSleep(testSleepSeconds);
+  } else if (sleepFor) {
+    powerSleep(sleepFor, true);
+  }
   wifiPoll();
   netPoll();
 
@@ -3470,21 +3579,20 @@ void loop() {
     bool attention = listening || pickedUp || demoStart ||
                      (toastLeft > 0 && toastLeft <= 4000);
     for (int i = 0; i < N_AGENTS && !attention; i++)
-      attention = agentStates[i] == ST_WORKING || agentStates[i] == ST_NEEDS_YOU;
-    uint8_t want = BRIGHT_LVLS[brightLvl];
-    if (flipped) want = 0;               // asleep face-down: AMOLED fully off
-    else if (!attention) {
-      int32_t idleFor = (int32_t)(now - lastActive);
-      if      (idleFor > 20 * 60000) want = BRIGHT_LOW;
-      else if (idleFor >  8 * 60000) want = BRIGHT_DIM;
-    }
+      attention = agentStates[i] == ST_NEEDS_YOU || (usbPowered && agentStates[i] == ST_WORKING);
+    uint8_t want = powerBrightness(BRIGHT_LVLS[brightLvl], usbPowered, attention,
+                                   now - lastActive, flipped);
     if (want != curBright) { curBright = want; gfx->setBrightness(want); }
   }
 
-  // render ~30 fps
+  // Touch/polling keeps running; only display work slows down while idle.
   static uint32_t lastFrame = 0;
-  if (now - lastFrame >= 33) {
+  bool interactive = listening || (int32_t)(now - lastActive) < 1500;
+  bool animated = (shownPage == PAGE_FACE && !completionOpen()) ||
+                  (shownPage == PAGE_CLOCK && clockView == CV_NP) || demoStart;
+  if (now - lastFrame >= powerFrameInterval(animated, interactive, screenDirty)) {
     lastFrame = now;
+    screenDirty = false;
 
     // asleep face-down: paint one black frame, then let the panel rest
     static bool sleepBlanked = false;
@@ -3602,6 +3710,7 @@ void loop() {
       drawPillToast(canvas, pinLabel, pinK, toastCy);
       canvas->setRotation(0);
       canvas->flush();
+      paintFrames++;
       delay(2);
       return;
     }
@@ -3780,6 +3889,7 @@ void loop() {
     drawPillToast(canvas, pinLabel, pinK, f.hideBubble ? 341 : 368);
     canvas->setRotation(0);
     canvas->flush();
+    paintFrames++;
   }
   delay(2);
 }

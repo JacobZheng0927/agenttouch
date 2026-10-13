@@ -52,6 +52,7 @@ bool rtcInit() {
   info = RtcInfo{};
   info.present = rtc.begin(Wire, PIN_I2C_SDA, PIN_I2C_SCL);
   if (!info.present) { Serial.println("rtc: PCF85063 not found"); return false; }
+  rtc.disableAlarm(); rtc.resetAlarm();
   rtc.setClockOutput(SensorPCF85063::CLK_LOW);   // CLKOUT pin floats here: stop the 32 kHz toggle
   bool integ = false;
   info.bootEpoch = rtcRead(&integ);
@@ -89,6 +90,18 @@ void rtcHostSync(uint32_t hostLocal) {
   rtcFormat(hostLocal, a, sizeof(a));
   rtcFormat(chip, b, sizeof(b));
   Serial.printf("rtc: set %s (chip had %s, drift %ld s)\n", a, b, (long)drift);
+}
+
+bool rtcArmMorning() {
+  if (!rtcRead()) return false;
+  rtc.disableAlarm(); rtc.resetAlarm();
+  // SensorLib 0.3.3 writes only four alarm bytes, leaving the weekday mask stale.
+  const uint8_t alarm[] = {0x0B, 0x00, 0x00, 0x09, 0x80, 0x80};
+  Wire.beginTransmission(0x51);
+  Wire.write(alarm, sizeof(alarm));
+  if (Wire.endTransmission() != 0) return false;
+  rtc.enableAlarm();
+  return true;
 }
 
 const RtcInfo& rtcInfo() { return info; }

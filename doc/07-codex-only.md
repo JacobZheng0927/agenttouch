@@ -152,3 +152,42 @@ For USB layout captures, the existing debug view message accepts
 `{"t":"view","p":"face","s":20,"reply":true}` to tap an active completion
 notice through its real hit handler; reply:false taps Back. It does not create
 or replay a completion.
+
+## Power saving and scheduled sleep (v1.6)
+
+On battery the panel is capped at 110/255 and dims to 40/255 after 30 seconds
+without interaction, even while Codex is working. Touch, pickup and a fresh
+completion restore it; approval and voice prompts stay readable. USB retains
+the chosen brightness and the existing eight/twenty-minute idle dimming.
+Touch and message polling stay independent of rendering: idle faces draw at
+about 15 fps, static pages at 1 fps, and interaction/new data redraws promptly.
+
+After 60 seconds of stable BLE on battery, Wi-Fi is switched off. It returns
+when USB is plugged in, for two minutes after explicit Wi-Fi setup, or after
+BLE is lost (at most a 30-second fallback wait). Wi-Fi modem sleep is enabled
+when the radio is on. Wi-Fi-only TTS/file transfers require that radio window;
+usage, todos, session counts and completion notices continue over BLE.
+
+The v1.6 migration switches sound-following eyes off once; an explicit later
+gaze setting is preserved. Codecs and I2S channels suspend between sounds and
+recordings, and resume on demand. Muting alone is not the power-saving control.
+
+The board sleeps every day from 20:00 to 09:00 using its local clock (Beijing
+on this Mac). This is real deep sleep: the display rail, radios and audio stop;
+real-time notifications are unavailable, and expired completions are not
+replayed in the morning. The PCF85063 daily 09:00 alarm on GPIO13 wakes it,
+independently of the Mac, with the ESP hardware timer as a fallback. The RTC
+restores time; an invalid clock disables scheduled sleep until synchronized.
+A fallback timer wake still before 09:00 sleeps for the remainder.
+
+Press the right IO18/voice key to wake at night for ten minutes; this first
+press is swallowed rather than starting dictation. A normal power-on/restart
+during the night also gets ten minutes before the schedule applies. Middle-key power-off is
+still a full PMU shutdown and does not arm the morning timer.
+
+USB diagnostics: `{"t":"power"}` reports the current power state;
+`{"t":"power","sleep_s":10}` tests real timer sleep (5–60 seconds only).
+The existing `/test/rtc` response also includes these power facts over BLE.
+`host/test_power.py` compiles the firmware policy and checks every second of
+the daily window, exact boundaries, temporary wake, dimming and frame cadence.
+Battery lifetime still needs a measured charge/discharge comparison.

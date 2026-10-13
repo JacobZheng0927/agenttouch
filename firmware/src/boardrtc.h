@@ -5,7 +5,7 @@
 // RTCLDO. The PMU datasheet keeps RTCLDO on in its OFF state (~40 µA from
 // the battery), so the clock survives long-press shutdown; only a fully
 // unpowered board (battery dead/removed = PMU power-on reset) loses it.
-// CLKOUT is unconnected, INT (GPIO13) unused for now, VBACKUP has only a cap.
+// CLKOUT is unconnected, INT (GPIO13) wakes scheduled sleep, VBACKUP has only a cap.
 // Convention: the chip holds LOCAL time (timezone already applied) — exactly
 // what clockSet() takes; the whole firmware thinks in local seconds.
 #pragma once
@@ -23,6 +23,7 @@ struct RtcInfo {
 };
 
 bool rtcInit();                                   // probe; seeds clockSet() when the chip has a usable time
+bool rtcArmMorning();                            // daily 09:00 alarm; false keeps timer fallback
 uint32_t rtcRead(bool* integrityOut = nullptr);   // local epoch from the chip, 0 if unusable
 void rtcHostSync(uint32_t hostLocalEpoch);        // rewrite the chip when it is >=2 s off or lost integrity
 const RtcInfo& rtcInfo();

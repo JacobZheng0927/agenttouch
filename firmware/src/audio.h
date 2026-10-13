@@ -22,6 +22,8 @@ enum SoundId : uint8_t {
 };
 
 bool audioInit();               // I2C codec setup + I2S + player task
+bool audioHardwareAwake();      // codec + I2S clocks, independent of microphone streaming
+bool audioPrepareSleep();       // hush, stop capture, then park hardware when playback is idle
 void audioPlay(uint8_t id);     // queue a sound (non-blocking, drops if full)
 int  soundIdByName(const char* name);   // -1 if unknown ({"t":"sound"} msgs)
 

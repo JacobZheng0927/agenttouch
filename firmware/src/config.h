@@ -97,15 +97,11 @@ static bool agentEnabled(int seat) { return seat == CODEX_SEAT; }
 // excluded in imuPoll — that entry is a never-used placeholder.
 #define PAGES_BY_ORIENT {PAGE_FACE, PAGE_CALENDAR, PAGE_FACE, PAGE_CLOCK}
 
-// Idle dimming (battery): full while any agent works / needs you or on
-// recent activity; else step down after 8 / 20 minutes. "Full" is picked on
-// the settings card (3 levels, NVS "bright"); DIM/LOW stay fixed below it.
+// User brightness on USB; power_policy caps battery brightness and dims after 30 s.
 #define BRIGHT_LEVELS {110, 180, 245}
 #define BRIGHT_FULL 180
-#define BRIGHT_DIM  100
-#define BRIGHT_LOW  40
 
-#define FW_VERSION "v1.5-activity"
+#define FW_VERSION "v1.6-power"
 #define FW_BUILD   __DATE__ " " __TIME__   // hello "build": tells an OTA apart from the old image
 
 // Clock/calendar pages use one fixed accent — user picked blue over the

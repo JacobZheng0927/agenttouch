@@ -53,7 +53,7 @@ The firmware's copy of this map is `firmware/src/pins.h`.
 | Keys | left key (BOOT) | 0 | active low, strapping pin |
 | Keys | right key (IO18) | 18 | active low, 10 kΩ pull-up |
 | IMU | INT1 / INT2 | 17 / 21 | not used |
-| RTC | INT | 13 | not used |
+| RTC | INT | 13 | 09:00 scheduled-sleep wake in the Codex fork |
 | Power | SYS_OUT | 16 | not a key line |
 | USB | D− / D+ | 19 / 20 | native USB, do not reuse |
 | UART0 | TX / RX | 43 / 44 | download and log |

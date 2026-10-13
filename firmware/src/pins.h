@@ -23,6 +23,7 @@
 #define PIN_KEY_PWR    16   // NOT a key sense line: GPIO16 is SYS_OUT (never moves when PWR is pressed, measured 2026-09-19). The middle key reaches the firmware only through the AXP2101 PWRON edge IRQs (pmuKeyScan in main.cpp).
 #define PIN_KEY_IO18   18   // right key, active LOW (10K pull-up)
 #define PIN_KEY_BOOT   0    // left key, active LOW
+#define PIN_RTC_INT    13   // PCF85063 alarm, active LOW
 
 // Audio: ES8311 codec (I2C 0x18 on the shared bus) + speaker PA
 #define PIN_I2S_MCLK   42
